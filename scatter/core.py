@@ -10,14 +10,6 @@ import bpy
 from mathutils import Euler, Vector
 from mathutils.bvhtree import BVHTree
 
-from .gn import (
-    ATTR_CATEGORY,
-    ATTR_PROTO_INDEX,
-    ATTR_ROT_Z,
-    ATTR_SCALE,
-    apply_scatter_instances_modifier,
-    build_category_library,
-)
 
 
 def _addon_source_dir() -> str:
@@ -528,6 +520,13 @@ def scatter_roadside_assets(context: bpy.types.Context, settings: ScatterRoadsid
     target.hide_viewport = False
     target.hide_render = False
 
+    # Clear existing content
+    for ob in list(target.objects):
+        bpy.data.objects.remove(ob, do_unlink=True)
+    old_mesh = bpy.data.meshes.get("RWB_ScatterPointsMesh")
+    if old_mesh:
+        bpy.data.meshes.remove(old_mesh)
+    
     rng = random.Random(int(settings.seed))
 
     categories: list[tuple[str, ScatterCategorySettings]] = [
@@ -564,54 +563,6 @@ def scatter_roadside_assets(context: bpy.types.Context, settings: ScatterRoadsid
             prototypes_by_cat[cat] = protos
         else:
             return 0, f"Imported 0 prototypes from: {cat_dir}"
-
-    lib_parent = _ensure_asset_library()
-    building_lib = None
-    tree_lib = None
-    grass_lib = None
-    if settings.building.enabled:
-        building_lib = build_category_library(name="RWB_GNLib_BUILDING", prototypes=prototypes_by_cat.get("BUILDING", []))
-    if settings.tree.enabled:
-        tree_lib = build_category_library(name="RWB_GNLib_TREE", prototypes=prototypes_by_cat.get("TREE", []))
-    if settings.grass.enabled:
-        grass_lib = build_category_library(name="RWB_GNLib_GRASS", prototypes=prototypes_by_cat.get("GRASS", []))
-
-    for lib in (building_lib, tree_lib, grass_lib):
-        if lib is None:
-            continue
-        if lib.name not in lib_parent.children:
-            try:
-                lib_parent.children.link(lib)
-            except Exception:
-                pass
-        _unhide_collection_tree(lib)
-        _hide_collection(lib)
-
-    points_obj = bpy.data.objects.get("RWB_ScatterPoints")
-    if points_obj is None or points_obj.type != "MESH":
-        mesh = bpy.data.meshes.new("RWB_ScatterPointsMesh")
-        points_obj = bpy.data.objects.new("RWB_ScatterPoints", mesh)
-    if points_obj.name not in target.objects:
-        target.objects.link(points_obj)
-    for c in list(points_obj.users_collection):
-        if c != target:
-            try:
-                c.objects.unlink(points_obj)
-            except Exception:
-                pass
-
-    points_obj.hide_select = False
-    try:
-        points_obj.hide_set(False)
-    except Exception:
-        points_obj.hide_viewport = False
-    points_obj.hide_render = False
-
-    verts: list[tuple[float, float, float]] = []
-    cat_attr: list[int] = []
-    proto_attr: list[int] = []
-    rot_attr: list[float] = []
-    scale_attr: list[float] = []
 
     proto_min_x_cache: dict[str, float] = {}
     proto_radius_xy_cache: dict[str, float] = {}
@@ -671,6 +622,7 @@ def scatter_roadside_assets(context: bpy.types.Context, settings: ScatterRoadsid
     road_half = float(settings.road_width_m) * 0.5
     no_spawn_gap = max(0.0, float(settings.road_no_spawn_m))
     route_index = _PolylineDistanceIndex(route_points, cell_size=max(8.0, road_half * 4.0))
+    
     for cat, cat_settings in categories:
         if not cat_settings.enabled:
             continue
@@ -682,6 +634,7 @@ def scatter_roadside_assets(context: bpy.types.Context, settings: ScatterRoadsid
             continue
         stats[cat] = {"samples": len(samples), "prob_pass": 0, "placed": 0}
         grid = _Grid2D(max(cat_settings.min_distance_m, 0.01))
+        
         for p, t in samples:
             if count >= int(settings.max_instances):
                 return count, ""
@@ -691,6 +644,7 @@ def scatter_roadside_assets(context: bpy.types.Context, settings: ScatterRoadsid
             else:
                 t2.normalize()
             perp = Vector((-t2.y, t2.x, 0.0))
+            
             for sgn in side_signs:
                 if count >= int(settings.max_instances):
                     return count, ""
@@ -758,11 +712,16 @@ def scatter_roadside_assets(context: bpy.types.Context, settings: ScatterRoadsid
                         if hit is None:
                             continue
                         loc, _ = hit
-                        verts.append((float(loc.x), float(loc.y), float(loc.z)))
-                        cat_attr.append(0)
-                        proto_attr.append(int(proto_idx))
-                        rot_attr.append(float(rot.z))
-                        scale_attr.append(float(sc))
+                        
+                        _instance_collection(
+                            f"RWB_{cat}_{count:05d}",
+                            proto,
+                            target,
+                            loc,
+                            rot,
+                            sc
+                        )
+                        
                         grid.insert(pos_xy.x, pos_xy.y)
                         global_grid.insert(pos_xy.x, pos_xy.y)
                         count += 1
@@ -796,11 +755,16 @@ def scatter_roadside_assets(context: bpy.types.Context, settings: ScatterRoadsid
                     if hit is None:
                         continue
                     loc, _ = hit
-                    verts.append((float(loc.x), float(loc.y), float(loc.z)))
-                    cat_attr.append(1 if cat == "TREE" else 2)
-                    proto_attr.append(int(proto_idx))
-                    rot_attr.append(float(rot.z))
-                    scale_attr.append(float(sc))
+                    
+                    _instance_collection(
+                        f"RWB_{cat}_{count:05d}",
+                        proto,
+                        target,
+                        loc,
+                        rot,
+                        sc
+                    )
+                    
                     grid.insert(pos_xy.x, pos_xy.y)
                     if cat != "GRASS":
                         global_grid.insert(pos_xy.x, pos_xy.y)
@@ -816,41 +780,5 @@ def scatter_roadside_assets(context: bpy.types.Context, settings: ScatterRoadsid
             bits.append(f"{cat}: samples={d['samples']} prob={d['prob_pass']} placed={d['placed']}")
         hint = " | ".join(bits) if bits else "No enabled categories"
         return 0, f"No placements. {hint}"
-
-    new_mesh = bpy.data.meshes.new("RWB_ScatterPointsMesh")
-    new_mesh.from_pydata(verts, [], [])
-
-    def _ensure_attr(mesh: bpy.types.Mesh, name: str, typ: str):
-        if name in mesh.attributes:
-            try:
-                mesh.attributes.remove(mesh.attributes[name])
-            except Exception:
-                pass
-        return mesh.attributes.new(name=name, type=typ, domain="POINT")
-
-    a_cat = _ensure_attr(new_mesh, ATTR_CATEGORY, "INT")
-    a_idx = _ensure_attr(new_mesh, ATTR_PROTO_INDEX, "INT")
-    a_rot = _ensure_attr(new_mesh, ATTR_ROT_Z, "FLOAT")
-    a_sc = _ensure_attr(new_mesh, ATTR_SCALE, "FLOAT")
-
-    for i in range(len(verts)):
-        a_cat.data[i].value = int(cat_attr[i])
-        a_idx.data[i].value = int(proto_attr[i])
-        a_rot.data[i].value = float(rot_attr[i])
-        a_sc.data[i].value = float(scale_attr[i])
-
-    old_mesh = points_obj.data
-    points_obj.data = new_mesh
-    if isinstance(old_mesh, bpy.types.Mesh) and old_mesh.users == 0:
-        bpy.data.meshes.remove(old_mesh)
-
-    err = apply_scatter_instances_modifier(
-        points_obj=points_obj,
-        building_lib=building_lib,
-        tree_lib=tree_lib,
-        grass_lib=grass_lib,
-    )
-    if err:
-        return 0, err
 
     return count, ""

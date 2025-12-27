@@ -8,6 +8,7 @@ import bpy
 
 
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".exr", ".hdr")
+_DEFAULT_TERRAIN_UV_TILE_M = 5.0
 
 
 def _addon_dir() -> str:
@@ -102,6 +103,57 @@ def _collect_texture_sets(category_dir: str) -> list[TextureSet]:
     return sets
 
 
+def _scan_texture_folder(folder: str) -> TextureSet | None:
+    if not folder:
+        return None
+    try:
+        folder = bpy.path.abspath(folder)
+    except Exception:
+        pass
+    if not os.path.isdir(folder):
+        return None
+
+    color = _find_first_file(folder, ["_color", "albedo", "diffuse", "basecolor"])
+    if color is None:
+        color = _find_any_image(folder)
+    if color is None:
+        return None
+    ao = _find_first_file(folder, ["ambientocclusion", "_ambientocclusion", "_ao", "ao"])
+    roughness = _find_first_file(folder, ["_roughness", "roughness"])
+    normal = _find_first_file(folder, ["_normalgl", "normalgl"])
+    if normal is None:
+        candidate = _find_first_file(folder, ["_normal", "normal"])
+        if candidate is not None and "normaldx" not in os.path.basename(candidate).lower():
+            normal = candidate
+    displacement = _find_first_file(folder, ["_displacement", "displacement", "height"])
+    return TextureSet(
+        name=os.path.basename(os.path.normpath(folder)),
+        color=color,
+        ao=ao,
+        roughness=roughness,
+        normal=normal,
+        displacement=displacement,
+    )
+
+
+def _pick_category_texture_set(
+    category_dir: str,
+    *,
+    preferred_folder: str | None,
+    seed: int,
+) -> TextureSet | None:
+    if preferred_folder:
+        t = _scan_texture_folder(preferred_folder)
+        if t is not None:
+            return t
+
+    sets = _collect_texture_sets(category_dir)
+    if not sets:
+        return None
+    rng = random.Random(int(seed))
+    return sets[rng.randrange(0, len(sets))]
+
+
 def _load_image(path: str | None, *, is_data: bool) -> bpy.types.Image | None:
     if not path:
         return None
@@ -111,6 +163,10 @@ def _load_image(path: str | None, *, is_data: bool) -> bpy.types.Image | None:
         img = bpy.data.images.load(path, check_existing=True)
     except RuntimeError:
         return None
+    try:
+        img.reload()
+    except Exception:
+        pass
     try:
         img.colorspace_settings.name = "Non-Color" if is_data else "sRGB"
     except Exception:
@@ -159,10 +215,118 @@ def _mesh_z_bounds_local(obj: bpy.types.Object) -> tuple[float, float] | None:
     return (min_z, max_z)
 
 
+def _ensure_planar_uv_xy(
+    obj: bpy.types.Object,
+    *,
+    tile_m: float,
+    uv_name: str = "UVMap",
+) -> bool:
+    mesh = obj.data
+    if not isinstance(mesh, bpy.types.Mesh):
+        return False
+
+    if not mesh.vertices or not mesh.polygons:
+        return False
+
+    try:
+        tile = max(0.001, float(tile_m))
+    except Exception:
+        tile = _DEFAULT_TERRAIN_UV_TILE_M
+
+    min_x = float("inf")
+    min_y = float("inf")
+    for v in mesh.vertices:
+        x = float(v.co.x)
+        y = float(v.co.y)
+        if x < min_x:
+            min_x = x
+        if y < min_y:
+            min_y = y
+
+    if min_x == float("inf") or min_y == float("inf"):
+        return False
+
+    created = False
+    if not mesh.uv_layers:
+        try:
+            mesh.uv_layers.new(name=uv_name)
+            created = True
+        except Exception:
+            return False
+
+    uv_layer = mesh.uv_layers.active or mesh.uv_layers[0]
+    try:
+        mesh.uv_layers.active_index = mesh.uv_layers.find(uv_layer.name)
+    except Exception:
+        pass
+
+    try:
+        uv_data = uv_layer.data
+        loops = mesh.loops
+        verts = mesh.vertices
+        for poly in mesh.polygons:
+            for li in poly.loop_indices:
+                vi = loops[li].vertex_index
+                co = verts[vi].co
+                uv_data[li].uv = ((float(co.x) - min_x) / tile, (float(co.y) - min_y) / tile)
+    except Exception:
+        return False
+
+    try:
+        mesh.update()
+    except Exception:
+        pass
+
+    return created
+
+
 def _new_node(nt: bpy.types.NodeTree, node_type: str, x: float, y: float) -> bpy.types.Node:
-    n = nt.nodes.new(node_type)
+    try:
+        n = nt.nodes.new(node_type)
+    except RuntimeError:
+        fallback = {"ShaderNodeSeparateColor": "ShaderNodeSeparateRGB"}.get(node_type)
+        if fallback is None:
+            raise
+        n = nt.nodes.new(fallback)
     n.location = (x, y)
     return n
+
+
+def reset_textures_data(*, texture_root: str | None) -> str:
+    root = bpy.path.abspath(texture_root) if texture_root else default_texture_root()
+    root = os.path.normpath(os.path.normcase(root))
+
+    removed_mats = 0
+    for name in ("RWB_Terrain_Mat", "RWB_Road_Mat"):
+        mat = bpy.data.materials.get(name)
+        if mat is None:
+            continue
+        try:
+            bpy.data.materials.remove(mat, do_unlink=True)
+            removed_mats += 1
+        except Exception:
+            pass
+
+    removed_imgs = 0
+    for img in list(bpy.data.images):
+        fp = str(getattr(img, "filepath", "") or "")
+        if not fp:
+            continue
+        try:
+            fp_abs = os.path.normpath(os.path.normcase(bpy.path.abspath(fp)))
+        except Exception:
+            continue
+        if not fp_abs.startswith(root):
+            continue
+        if getattr(img, "users", 0) != 0:
+            continue
+        try:
+            bpy.data.images.remove(img)
+            removed_imgs += 1
+        except Exception:
+            pass
+
+    return f"Removed {removed_mats} materials, {removed_imgs} images"
 
 
 def _mix_factor_from_noise(nt: bpy.types.NodeTree, vec_socket, *, w: float, x: float, y: float):
@@ -448,23 +612,44 @@ def apply_terrain_material(
     *,
     texture_root: str | None,
     seed: int,
-    variants_per_category: int,
+    ground_texture_dir: str | None,
+    rock_texture_dir: str | None,
+    snow_texture_dir: str | None,
     ground_to_rock_ratio: float,
     rock_to_snow_ratio: float,
     height_blend: float,
-    cliff_slope_start: float,
-    cliff_slope_end: float,
-    noise_scale: float,
-    transition_width: float = 0.06,
+    texture_scale: float,
 ) -> str | None:
     if terrain_obj.type != "MESH":
         return "Terrain object is not a mesh"
 
+    mesh = terrain_obj.data
+    if isinstance(mesh, bpy.types.Mesh) and not mesh.uv_layers:
+        _ensure_planar_uv_xy(terrain_obj, tile_m=_DEFAULT_TERRAIN_UV_TILE_M)
+
     root = bpy.path.abspath(texture_root) if texture_root else default_texture_root()
-    ground_sets = _collect_texture_sets(os.path.join(root, "Ground"))
-    rock_sets = _collect_texture_sets(os.path.join(root, "Rock"))
-    snow_sets = _collect_texture_sets(os.path.join(root, "Snow"))
-    cliff_sets = _collect_texture_sets(os.path.join(root, "Cliff"))
+    ground_set = _pick_category_texture_set(
+        os.path.join(root, "Ground"),
+        preferred_folder=ground_texture_dir,
+        seed=int(seed) ^ 0x13579,
+    )
+    rock_set = _pick_category_texture_set(
+        os.path.join(root, "Rock"),
+        preferred_folder=rock_texture_dir,
+        seed=int(seed) ^ 0x2468A,
+    )
+    snow_set = _pick_category_texture_set(
+        os.path.join(root, "Snow"),
+        preferred_folder=snow_texture_dir,
+        seed=int(seed) ^ 0xABCDE,
+    )
+
+    if ground_set is None:
+        return "No ground texture found"
+    if rock_set is None:
+        return "No rock texture found"
+    if snow_set is None:
+        return "No snow texture found"
 
     z = _mesh_z_bounds_local(terrain_obj)
     if z is None:
@@ -476,7 +661,6 @@ def apply_terrain_material(
     if nt is None:
         return "Failed to create terrain material node tree"
     nt.nodes.clear()
-    nt.links.clear()
 
     out = _new_node(nt, "ShaderNodeOutputMaterial", 1400, 0)
     bsdf = _new_node(nt, "ShaderNodeBsdfPrincipled", 1180, 0)
@@ -486,9 +670,10 @@ def apply_terrain_material(
     uv = texcoord.outputs.get("UV") or texcoord.outputs[0]
 
     mapping = _new_node(nt, "ShaderNodeMapping", 200, 160)
-    mapping.inputs["Scale"].default_value = (float(noise_scale), float(noise_scale), 1.0)
+    s = max(0.001, float(texture_scale))
+    mapping.inputs["Scale"].default_value = (s, s, 1.0)
     nt.links.new(uv, mapping.inputs["Vector"])
-    noise_vec = mapping.outputs["Vector"]
+    uv_scaled = mapping.outputs["Vector"]
 
     geom = _new_node(nt, "ShaderNodeNewGeometry", 0, -260)
     pos = geom.outputs.get("Position") or geom.outputs[0]
@@ -539,199 +724,9 @@ def apply_terrain_material(
 
     t1 = _smoothstep(nt, h, r1_lo.outputs["Value"], r1_hi.outputs["Value"], x=680, y=-640)
     t2 = _smoothstep(nt, h, r2_lo.outputs["Value"], r2_hi.outputs["Value"], x=680, y=-760)
-
-    # --- Manual Painting Override Logic ---
-    # Attribute: Terrain_Region_Mask (R=Ground, G=Rock, B=Snow)
-    attr = _new_node(nt, "ShaderNodeAttribute", 440, -1000)
-    attr.attribute_name = "Terrain_Region_Mask"
-    
-    # Check if attribute exists (we assume user paints if attribute is present and non-black)
-    # However, in shader nodes we just use the values. If 0,0,0, it has no effect.
-    
-    # Calculate procedural weights
-    # W_snow = t2
-    # W_rock = t1 * (1 - t2)
-    # W_ground = (1 - t1) * (1 - t2)
-    
-    one_node = _new_node(nt, "ShaderNodeValue", 680, -900)
-    one_node.outputs["Value"].default_value = 1.0
-    
-    sub_t2 = _new_node(nt, "ShaderNodeMath", 900, -900)
-    sub_t2.operation = "SUBTRACT"
-    nt.links.new(one_node.outputs["Value"], sub_t2.inputs[0])
-    nt.links.new(t2, sub_t2.inputs[1]) # (1-t2)
-    
-    w_p_snow = t2
-    
-    w_p_rock = _new_node(nt, "ShaderNodeMath", 1100, -900)
-    w_p_rock.operation = "MULTIPLY"
-    nt.links.new(t1, w_p_rock.inputs[0])
-    nt.links.new(sub_t2.outputs["Value"], w_p_rock.inputs[1])
-    
-    sub_t1 = _new_node(nt, "ShaderNodeMath", 900, -1000)
-    sub_t1.operation = "SUBTRACT"
-    nt.links.new(one_node.outputs["Value"], sub_t1.inputs[0])
-    nt.links.new(t1, sub_t1.inputs[1]) # (1-t1)
-    
-    w_p_ground = _new_node(nt, "ShaderNodeMath", 1100, -1000)
-    w_p_ground.operation = "MULTIPLY"
-    nt.links.new(sub_t1.outputs["Value"], w_p_ground.inputs[0])
-    nt.links.new(sub_t2.outputs["Value"], w_p_ground.inputs[1])
-    
-    # Mix with painted weights
-    sep_attr = _new_node(nt, "ShaderNodeSeparateColor", 680, -1100)
-    nt.links.new(attr.outputs["Color"], sep_attr.inputs[0])
-    
-    paint_ground = sep_attr.outputs[0] # R
-    paint_rock = sep_attr.outputs[1]   # G
-    paint_snow = sep_attr.outputs[2]   # B
-    
-    # Paint Mask = Clamp(R + G + B)
-    add_gr = _new_node(nt, "ShaderNodeMath", 900, -1100)
-    add_gr.operation = "ADD"
-    nt.links.new(paint_ground, add_gr.inputs[0])
-    nt.links.new(paint_rock, add_gr.inputs[1])
-    
-    paint_mask = _new_node(nt, "ShaderNodeMath", 1100, -1100)
-    paint_mask.operation = "ADD"
-    nt.links.new(add_gr.outputs["Value"], paint_mask.inputs[0])
-    nt.links.new(paint_snow, paint_mask.inputs[1])
-    paint_mask.use_clamp = True
-    
-    # Mix Weights
-    # Final Ground
-    w_f_ground = _new_node(nt, "ShaderNodeMix", 1300, -900)
-    w_f_ground.data_type = "FLOAT"
-    nt.links.new(paint_mask.outputs["Value"], w_f_ground.inputs["Factor"])
-    nt.links.new(w_p_ground.outputs["Value"], w_f_ground.inputs["A"])
-    nt.links.new(paint_ground, w_f_ground.inputs["B"])
-    
-    # Final Rock
-    w_f_rock = _new_node(nt, "ShaderNodeMix", 1300, -1000)
-    w_f_rock.data_type = "FLOAT"
-    nt.links.new(paint_mask.outputs["Value"], w_f_rock.inputs["Factor"])
-    nt.links.new(w_p_rock.outputs["Value"], w_f_rock.inputs["A"])
-    nt.links.new(paint_rock, w_f_rock.inputs["B"])
-    
-    # Final Snow
-    w_f_snow = _new_node(nt, "ShaderNodeMix", 1300, -1100)
-    w_f_snow.data_type = "FLOAT"
-    nt.links.new(paint_mask.outputs["Value"], w_f_snow.inputs["Factor"])
-    nt.links.new(w_p_snow, w_f_snow.inputs["A"])
-    nt.links.new(paint_snow, w_f_snow.inputs["B"])
-    
-    # Reconstruct t1, t2
-    # t1_new = Rock / (Ground + Rock)
-    add_gr_f = _new_node(nt, "ShaderNodeMath", 1500, -900)
-    add_gr_f.operation = "ADD"
-    nt.links.new(w_f_ground.outputs["Result"], add_gr_f.inputs[0])
-    nt.links.new(w_f_rock.outputs["Result"], add_gr_f.inputs[1])
-    
-    # Safe divide
-    div_t1 = _new_node(nt, "ShaderNodeMath", 1700, -900)
-    div_t1.operation = "DIVIDE"
-    nt.links.new(w_f_rock.outputs["Result"], div_t1.inputs[0])
-    nt.links.new(add_gr_f.outputs["Value"], div_t1.inputs[1])
-    
-    t1 = div_t1.outputs["Value"]
-    
-    # t2_new = Snow / (Ground + Rock + Snow)
-    add_total = _new_node(nt, "ShaderNodeMath", 1500, -1000)
-    add_total.operation = "ADD"
-    nt.links.new(add_gr_f.outputs["Value"], add_total.inputs[0])
-    nt.links.new(w_f_snow.outputs["Result"], add_total.inputs[1])
-    
-    div_t2 = _new_node(nt, "ShaderNodeMath", 1700, -1000)
-    div_t2.operation = "DIVIDE"
-    nt.links.new(w_f_snow.outputs["Result"], div_t2.inputs[0])
-    nt.links.new(add_total.outputs["Value"], div_t2.inputs[1])
-    
-    t2 = div_t2.outputs["Value"]
-    
-    # --- End Manual Painting Override Logic ---
-
-    one = _new_node(nt, "ShaderNodeValue", 440, -880)
-
-    one.outputs["Value"].default_value = 1.0
-
-    inv_t1 = _new_node(nt, "ShaderNodeMath", 900, -640)
-    inv_t1.operation = "SUBTRACT"
-    nt.links.new(one.outputs["Value"], inv_t1.inputs[0])
-    nt.links.new(t1, inv_t1.inputs[1])
-    ground_w = inv_t1.outputs["Value"]
-
-    inv_t2 = _new_node(nt, "ShaderNodeMath", 900, -760)
-    inv_t2.operation = "SUBTRACT"
-    nt.links.new(one.outputs["Value"], inv_t2.inputs[0])
-    nt.links.new(t2, inv_t2.inputs[1])
-
-    rock_w = _new_node(nt, "ShaderNodeMath", 1120, -700)
-    rock_w.operation = "MULTIPLY"
-    nt.links.new(t1, rock_w.inputs[0])
-    nt.links.new(inv_t2.outputs["Value"], rock_w.inputs[1])
-
-    snow_w = t2
-
-    ground_layer = _build_category_mix(
-        nt,
-        uv,
-        noise_vec,
-        ground_sets,
-        seed=int(seed) ^ 0x13579,
-        variants=variants_per_category,
-        dominant_min=0.80,
-        dominant_max=1.0,
-        coverage_min=0.72,
-        coverage_max=0.88,
-        softness=transition_width,
-        x=0,
-        y=520,
-    )
-    rock_layer = _build_category_mix(
-        nt,
-        uv,
-        noise_vec,
-        rock_sets,
-        seed=int(seed) ^ 0x2468A,
-        variants=variants_per_category,
-        dominant_min=0.80,
-        dominant_max=1.0,
-        coverage_min=0.74,
-        coverage_max=0.90,
-        softness=transition_width,
-        x=0,
-        y=100,
-    )
-    snow_layer = _build_category_mix(
-        nt,
-        uv,
-        noise_vec,
-        snow_sets,
-        seed=int(seed) ^ 0xABCDE,
-        variants=variants_per_category,
-        dominant_min=0.80,
-        dominant_max=1.0,
-        coverage_min=0.78,
-        coverage_max=0.92,
-        softness=transition_width,
-        x=0,
-        y=-320,
-    )
-    cliff_layer = _build_category_mix(
-        nt,
-        uv,
-        noise_vec,
-        cliff_sets,
-        seed=int(seed) ^ 0x77777,
-        variants=variants_per_category,
-        dominant_min=0.80,
-        dominant_max=1.0,
-        coverage_min=0.80,
-        coverage_max=0.93,
-        softness=transition_width,
-        x=0,
-        y=-760,
-    )
+    ground_layer = _texture_set_nodes(nt, uv_scaled, ground_set, x=0, y=520)
+    rock_layer = _texture_set_nodes(nt, uv_scaled, rock_set, x=0, y=100)
+    snow_layer = _texture_set_nodes(nt, uv_scaled, snow_set, x=0, y=-320)
 
     mix_gr = _new_node(nt, "ShaderNodeMixRGB", 760, 320)
     mix_gr.inputs["Fac"].default_value = 0.0
@@ -787,58 +782,14 @@ def apply_terrain_material(
     nt.links.new(mixd_gr.outputs["Result"], mixd_rs.inputs["A"])
     nt.links.new(snow_layer[3], mixd_rs.inputs["B"])
     base_disp = mixd_rs.outputs["Result"]
-
-    sep_n = _new_node(nt, "ShaderNodeSeparateXYZ", 220, -40)
-    nt.links.new(normal, sep_n.inputs["Vector"])
-    abs_z = _new_node(nt, "ShaderNodeMath", 440, -40)
-    abs_z.operation = "ABSOLUTE"
-    nt.links.new(sep_n.outputs["Z"], abs_z.inputs[0])
-    steep = _new_node(nt, "ShaderNodeMath", 640, -40)
-    steep.operation = "SUBTRACT"
-    nt.links.new(one.outputs["Value"], steep.inputs[0])
-    nt.links.new(abs_z.outputs["Value"], steep.inputs[1])
-
-    cliff_start = _new_node(nt, "ShaderNodeValue", 440, -140)
-    cliff_start.outputs["Value"].default_value = float(max(0.0, min(1.0, cliff_slope_start)))
-    cliff_end = _new_node(nt, "ShaderNodeValue", 440, -180)
-    cliff_end.outputs["Value"].default_value = float(max(0.0, min(1.0, cliff_slope_end)))
-    cliff_f = _smoothstep(nt, steep.outputs["Value"], cliff_start.outputs["Value"], cliff_end.outputs["Value"], x=900, y=-40)
-
-    cliff_mix_c = _new_node(nt, "ShaderNodeMixRGB", 1220, 320)
-    cliff_mix_c.inputs["Fac"].default_value = 0.0
-    nt.links.new(cliff_f, cliff_mix_c.inputs["Fac"])
-    nt.links.new(base_color, cliff_mix_c.inputs["Color1"])
-    nt.links.new(cliff_layer[0], cliff_mix_c.inputs["Color2"])
-
-    cliff_mix_r = _new_node(nt, "ShaderNodeMix", 1220, 100)
-    cliff_mix_r.data_type = "FLOAT"
-    nt.links.new(cliff_f, cliff_mix_r.inputs["Factor"])
-    nt.links.new(base_rough, cliff_mix_r.inputs["A"])
-    nt.links.new(cliff_layer[1], cliff_mix_r.inputs["B"])
-
-    cliff_mix_n = _new_node(nt, "ShaderNodeMix", 1220, -120)
-    cliff_mix_n.data_type = "VECTOR"
-    nt.links.new(cliff_f, cliff_mix_n.inputs["Factor"])
-    nt.links.new(base_norm.outputs["Vector"], cliff_mix_n.inputs["A"])
-    nt.links.new(cliff_layer[2], cliff_mix_n.inputs["B"])
-    cliff_norm = _new_node(nt, "ShaderNodeVectorMath", 1420, -120)
-    cliff_norm.operation = "NORMALIZE"
-    nt.links.new(cliff_mix_n.outputs["Result"], cliff_norm.inputs[0])
-
-    nt.links.new(cliff_mix_c.outputs["Color"], bsdf.inputs["Base Color"])
-    nt.links.new(cliff_mix_r.outputs["Result"], bsdf.inputs["Roughness"])
-    nt.links.new(cliff_norm.outputs["Vector"], bsdf.inputs["Normal"])
-
-    cliff_mix_d = _new_node(nt, "ShaderNodeMix", 1220, -340)
-    cliff_mix_d.data_type = "FLOAT"
-    nt.links.new(cliff_f, cliff_mix_d.inputs["Factor"])
-    nt.links.new(base_disp, cliff_mix_d.inputs["A"])
-    nt.links.new(cliff_layer[3], cliff_mix_d.inputs["B"])
+    nt.links.new(base_color, bsdf.inputs["Base Color"])
+    nt.links.new(base_rough, bsdf.inputs["Roughness"])
+    nt.links.new(base_norm.outputs["Vector"], bsdf.inputs["Normal"])
 
     disp = _new_node(nt, "ShaderNodeDisplacement", 1400, -340)
     disp.inputs["Midlevel"].default_value = 0.5
     disp.inputs["Scale"].default_value = 0.06
-    nt.links.new(cliff_mix_d.outputs["Result"], disp.inputs["Height"])
+    nt.links.new(base_disp, disp.inputs["Height"])
     if "Displacement" in out.inputs:
         nt.links.new(disp.outputs["Displacement"], out.inputs["Displacement"])
 
@@ -867,53 +818,59 @@ def apply_road_material(
     if nt is None:
         return "Failed to create road material node tree"
     nt.nodes.clear()
-    nt.links.clear()
 
-    out = _new_node(nt, "ShaderNodeOutputMaterial", 1180, 0)
-    bsdf = _new_node(nt, "ShaderNodeBsdfPrincipled", 960, 0)
-    nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
+    try:
+        out = _new_node(nt, "ShaderNodeOutputMaterial", 1180, 0)
+        bsdf = _new_node(nt, "ShaderNodeBsdfPrincipled", 960, 0)
+        nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
 
-    texcoord = _new_node(nt, "ShaderNodeTexCoord", 0, 160)
-    uv = texcoord.outputs.get("UV") or texcoord.outputs[0]
+        texcoord = _new_node(nt, "ShaderNodeTexCoord", 0, 160)
+        uv = texcoord.outputs.get("UV") or texcoord.outputs[0]
 
-    mapping = _new_node(nt, "ShaderNodeMapping", 200, 160)
-    mapping.inputs["Scale"].default_value = (float(noise_scale) * 1.2, float(noise_scale) * 0.25, 1.0)
-    nt.links.new(uv, mapping.inputs["Vector"])
-    noise_vec = mapping.outputs["Vector"]
+        mapping = _new_node(nt, "ShaderNodeMapping", 200, 160)
+        mapping.inputs["Scale"].default_value = (float(noise_scale) * 1.2, float(noise_scale) * 0.25, 1.0)
+        nt.links.new(uv, mapping.inputs["Vector"])
+        noise_vec = mapping.outputs["Vector"]
 
-    road_layer = _build_category_mix(
-        nt,
-        uv,
-        noise_vec,
-        road_sets,
-        seed=int(seed) ^ 0xF00D,
-        variants=variants,
-        dominant_min=0.80,
-        dominant_max=1.0,
-        coverage_min=0.82,
-        coverage_max=0.94,
-        softness=0.04,
-        x=0,
-        y=200,
-    )
+        road_layer = _build_category_mix(
+            nt,
+            uv,
+            noise_vec,
+            road_sets,
+            seed=int(seed) ^ 0xF00D,
+            variants=variants,
+            dominant_min=0.80,
+            dominant_max=1.0,
+            coverage_min=0.82,
+            coverage_max=0.94,
+            softness=0.04,
+            x=0,
+            y=200,
+        )
 
-    nt.links.new(road_layer[0], bsdf.inputs["Base Color"])
-    nt.links.new(road_layer[1], bsdf.inputs["Roughness"])
+        nt.links.new(road_layer[0], bsdf.inputs["Base Color"])
+        nt.links.new(road_layer[1], bsdf.inputs["Roughness"])
 
-    norm = _new_node(nt, "ShaderNodeVectorMath", 820, -220)
-    norm.operation = "NORMALIZE"
-    nt.links.new(road_layer[2], norm.inputs[0])
-    nt.links.new(norm.outputs["Vector"], bsdf.inputs["Normal"])
+        norm = _new_node(nt, "ShaderNodeVectorMath", 820, -220)
+        norm.operation = "NORMALIZE"
+        nt.links.new(road_layer[2], norm.inputs[0])
+        nt.links.new(norm.outputs["Vector"], bsdf.inputs["Normal"])
 
-    disp = _new_node(nt, "ShaderNodeDisplacement", 980, -220)
-    disp.inputs["Midlevel"].default_value = 0.5
-    disp.inputs["Scale"].default_value = 0.02
-    nt.links.new(road_layer[3], disp.inputs["Height"])
-    if "Displacement" in out.inputs:
-        nt.links.new(disp.outputs["Displacement"], out.inputs["Displacement"])
+        disp = _new_node(nt, "ShaderNodeDisplacement", 980, -220)
+        disp.inputs["Midlevel"].default_value = 0.5
+        disp.inputs["Scale"].default_value = 0.02
+        nt.links.new(road_layer[3], disp.inputs["Height"])
+        if "Displacement" in out.inputs:
+            nt.links.new(disp.outputs["Displacement"], out.inputs["Displacement"])
 
-    _set_active_material(road_obj, mat)
-    return None
+        _set_active_material(road_obj, mat)
+        return None
+    except Exception as e:
+        nt.nodes.clear()
+        out = _new_node(nt, "ShaderNodeOutputMaterial", 300, 0)
+        bsdf = _new_node(nt, "ShaderNodeBsdfPrincipled", 80, 0)
+        nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
+        return f"Road material build failed: {e}"
 
 
 def apply_textures_from_scene_settings(
@@ -927,21 +884,19 @@ def apply_textures_from_scene_settings(
     seed = int(getattr(scene_settings, "seed", 0))
     variants = int(getattr(scene_settings, "texture_variants", 3))
     noise_scale = float(getattr(scene_settings, "texture_noise_scale", 6.0))
-    transition_width = float(getattr(scene_settings, "texture_transition_width", 0.06))
 
     if bool(getattr(scene_settings, "apply_terrain_textures", True)) and terrain_obj is not None:
         m = apply_terrain_material(
             terrain_obj,
             texture_root=root,
             seed=seed,
-            variants_per_category=variants,
+            ground_texture_dir=str(getattr(scene_settings, "terrain_ground_texture_dir", "") or ""),
+            rock_texture_dir=str(getattr(scene_settings, "terrain_rock_texture_dir", "") or ""),
+            snow_texture_dir=str(getattr(scene_settings, "terrain_snow_texture_dir", "") or ""),
             ground_to_rock_ratio=float(getattr(scene_settings, "terrain_ground_ratio", 0.4)),
             rock_to_snow_ratio=float(getattr(scene_settings, "terrain_rock_ratio", 0.75)),
             height_blend=float(getattr(scene_settings, "terrain_height_blend", 0.08)),
-            cliff_slope_start=float(getattr(scene_settings, "terrain_cliff_slope_start", 0.35)),
-            cliff_slope_end=float(getattr(scene_settings, "terrain_cliff_slope_end", 0.6)),
-            noise_scale=noise_scale,
-            transition_width=transition_width,
+            texture_scale=float(getattr(scene_settings, "terrain_texture_scale", noise_scale)),
         )
         if m:
             msgs.append(m)

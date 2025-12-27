@@ -71,18 +71,6 @@ macOS 常见路径示例：
 - `Mix Scale`：噪声缩放，值越小区域越大越连贯，值越大变化越碎
 - `Transition Width`：混合过渡宽度（越大过渡越柔）
 
-## 手绘地形区域遮罩（Manual Painting）
-
-点击 `Start Painting` 后会对 `RWB_Terrain` 创建/确保一个颜色属性，并切换到 `Vertex Paint`。
-
-默认约定：
-
-- 红色（R）：Ground
-- 绿色（G）：Rock
-- 蓝色（B）：Snow
-
-你可以用顶点绘制在地形上手工控制不同区域的材质分布。
-
 ## 沿路散布资产（Procedural Scatter）
 
 在主面板下方会有子面板 `Procedural`，用于沿路线两侧散布建筑、树和草。
@@ -156,7 +144,6 @@ macOS 常见路径示例：
 主要 UI 与操作符入口：
 
 - `route2world.generate_from_gpx`
-- `route2world.setup_paint_mask`
 - `route2world.scatter_roadside_assets`
 
 主要对象命名约定：
@@ -167,7 +154,7 @@ macOS 常见路径示例：
 
 - `__init__.py`：注册入口
 - `ui.py`：主面板与主参数
-- `ops.py`：GPX 生成与绘制遮罩
+- `ops.py`：GPX 生成
 - `texturing.py`：自动材质与贴图扫描逻辑
 - `scatter_core.py` / `scatter_ops.py` / `scatter_ui.py`：散布系统
 

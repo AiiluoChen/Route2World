@@ -66,7 +66,6 @@ def ensure_terrain_transition_node_group() -> bpy.types.NodeTree:
 
     nt = ng
     nt.nodes.clear()
-    nt.links.clear()
 
     group_in = _new_node(nt, "NodeGroupInput", -900, 0)
     group_out = _new_node(nt, "NodeGroupOutput", 900, 0)
@@ -130,8 +129,10 @@ def ensure_terrain_transition_node_group() -> bpy.types.NodeTree:
     nt.links.new(sep.outputs["Y"], comb_xy.inputs["Y"])
     nt.links.new(comb_xy.outputs["Vector"], length.inputs[0])
 
-    nt.links.new(length.outputs["Value"], sel_cmp.inputs[2])
-    nt.links.new(group_in.outputs["Transition Width (m)"], sel_cmp.inputs[3])
+    sel_a = sel_cmp.inputs.get("A") or sel_cmp.inputs[0]
+    sel_b = sel_cmp.inputs.get("B") or sel_cmp.inputs[1]
+    nt.links.new(length.outputs["Value"], sel_a)
+    nt.links.new(group_in.outputs["Transition Width (m)"], sel_b)
 
     nt.links.new(length.outputs["Value"], mapr.inputs["Value"])
     nt.links.new(group_in.outputs["Flat Width (m)"], mapr.inputs["From Min"])
@@ -225,7 +226,10 @@ def apply_terrain_transition(
     if road_obj is None or road_obj.type != "MESH":
         return "Road object is not a mesh"
 
-    ng = ensure_terrain_transition_node_group()
+    try:
+        ng = ensure_terrain_transition_node_group()
+    except Exception as e:
+        return f"Failed to build terrain transition node group: {e}"
     _set_socket_default(ng, "Road", road_obj)
     _set_socket_default(ng, "Transition Width (m)", float(max(0.0, transition_width_m)))
     _set_socket_default(ng, "Flat Width (m)", float(max(0.0, flat_width_m)))

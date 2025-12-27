@@ -17,7 +17,11 @@ from .gui.main import (
     ROUTE2WORLD_PT_Step3PostProcess,
     Route2WorldProperties,
 )
-from .app.ops import ROUTE2WORLD_OT_ApplyTextures, ROUTE2WORLD_OT_GenerateFromGpx, ROUTE2WORLD_OT_SetupPaintMask
+from .app.ops import (
+    ROUTE2WORLD_OT_ApplyTextures,
+    ROUTE2WORLD_OT_GenerateFromGpx,
+    ROUTE2WORLD_OT_ResetTextures,
+)
 from .postprocess.terrain_transition import ROUTE2WORLD_OT_ApplyTerrainTransition
 from .scatter.ops import ROUTE2WORLD_OT_ScatterRoadsideAssets
 from .gui.scatter import ROUTE2WORLD_PT_Procedural, Route2WorldScatterProperties
@@ -67,7 +71,7 @@ _classes = (
     Route2WorldScatterProperties,
     ROUTE2WORLD_OT_GenerateFromGpx,
     ROUTE2WORLD_OT_ApplyTextures,
-    ROUTE2WORLD_OT_SetupPaintMask,
+    ROUTE2WORLD_OT_ResetTextures,
     ROUTE2WORLD_OT_ApplyTerrainTransition,
     ROUTE2WORLD_OT_ScatterRoadsideAssets,
     ROUTE2WORLD_PT_Main,
@@ -77,12 +81,51 @@ _classes = (
     ROUTE2WORLD_PT_Procedural,
 )
 
+def _ensure_default_targets():
+    for scene in bpy.data.scenes:
+        p = getattr(scene, "route2world", None)
+        if p is not None:
+            terrain_obj = bpy.data.objects.get("RWB_Terrain")
+            road_obj = bpy.data.objects.get("RWB_Road")
+            if terrain_obj is not None:
+                if getattr(p, "texture_terrain_obj", None) is None:
+                    p.texture_terrain_obj = terrain_obj
+                if getattr(p, "terrain_transition_terrain_obj", None) is None:
+                    p.terrain_transition_terrain_obj = terrain_obj
+            if road_obj is not None:
+                if getattr(p, "texture_road_obj", None) is None:
+                    p.texture_road_obj = road_obj
+                if getattr(p, "terrain_transition_road_obj", None) is None:
+                    p.terrain_transition_road_obj = road_obj
+
+        s = getattr(scene, "route2world_scatter", None)
+        if s is not None:
+            route_obj = bpy.data.objects.get("RWB_Route")
+            terrain_obj = bpy.data.objects.get("RWB_Terrain")
+            if route_obj is not None and getattr(s, "route_object", None) is None:
+                s.route_object = route_obj
+            if terrain_obj is not None and getattr(s, "terrain_object", None) is None:
+                s.terrain_object = terrain_obj
+
+    return None
+
+def _ensure_default_targets_timer():
+    try:
+        _ensure_default_targets()
+    except Exception:
+        pass
+    return None
+
 
 def register():
     for c in _classes:
         bpy.utils.register_class(c)
     bpy.types.Scene.route2world = bpy.props.PointerProperty(type=Route2WorldProperties)
     bpy.types.Scene.route2world_scatter = bpy.props.PointerProperty(type=Route2WorldScatterProperties)
+    try:
+        bpy.app.timers.register(_ensure_default_targets_timer, first_interval=0.1)
+    except Exception:
+        pass
 
 
 def unregister():

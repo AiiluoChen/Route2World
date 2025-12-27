@@ -5,10 +5,8 @@ from .translations import t
 
 def update_textures(self, context):
     """Update textures on existing objects when properties change."""
-    # Try to find the objects by name (default names used in ops.py)
-    # We could store pointers, but names are simpler for now.
-    terrain_obj = bpy.data.objects.get("RWB_Terrain")
-    road_obj = bpy.data.objects.get("RWB_Road")
+    terrain_obj = getattr(self, "texture_terrain_obj", None) or bpy.data.objects.get("RWB_Terrain")
+    road_obj = getattr(self, "texture_road_obj", None) or bpy.data.objects.get("RWB_Road")
 
     if terrain_obj or road_obj:
         apply_textures_from_scene_settings(
@@ -62,6 +60,16 @@ class Route2WorldProperties(bpy.types.PropertyGroup):
         update=update_textures,
     )
 
+    texture_terrain_obj: bpy.props.PointerProperty(
+        name="Terrain",
+        type=bpy.types.Object,
+    )
+
+    texture_road_obj: bpy.props.PointerProperty(
+        name="Road",
+        type=bpy.types.Object,
+    )
+
     apply_terrain_textures: bpy.props.BoolProperty(
         name="Texture Terrain",
         default=True,
@@ -71,6 +79,38 @@ class Route2WorldProperties(bpy.types.PropertyGroup):
     apply_road_textures: bpy.props.BoolProperty(
         name="Texture Road",
         default=True,
+        update=update_textures,
+    )
+
+    terrain_ground_texture_dir: bpy.props.StringProperty(
+        name="Ground Texture",
+        description="Optional override. If empty, picks one folder from Texture Root/Ground",
+        subtype="DIR_PATH",
+        default="",
+        update=update_textures,
+    )
+
+    terrain_rock_texture_dir: bpy.props.StringProperty(
+        name="Rock Texture",
+        description="Optional override. If empty, picks one folder from Texture Root/Rock",
+        subtype="DIR_PATH",
+        default="",
+        update=update_textures,
+    )
+
+    terrain_snow_texture_dir: bpy.props.StringProperty(
+        name="Snow Texture",
+        description="Optional override. If empty, picks one folder from Texture Root/Snow",
+        subtype="DIR_PATH",
+        default="",
+        update=update_textures,
+    )
+
+    terrain_texture_scale: bpy.props.FloatProperty(
+        name="Texture Scale",
+        min=0.001,
+        soft_max=50.0,
+        default=6.0,
         update=update_textures,
     )
 
@@ -87,14 +127,6 @@ class Route2WorldProperties(bpy.types.PropertyGroup):
         min=0.1,
         soft_max=50.0,
         default=6.0,
-    )
-
-    texture_transition_width: bpy.props.FloatProperty(
-        name="Transition Width",
-        min=0.0,
-        max=1.0,
-        default=0.06,
-        update=update_textures,
     )
 
     terrain_ground_ratio: bpy.props.FloatProperty(
@@ -116,20 +148,6 @@ class Route2WorldProperties(bpy.types.PropertyGroup):
         min=0.0,
         max=0.5,
         default=0.08,
-    )
-
-    terrain_cliff_slope_start: bpy.props.FloatProperty(
-        name="Cliff Start",
-        min=0.0,
-        max=1.0,
-        default=0.35,
-    )
-
-    terrain_cliff_slope_end: bpy.props.FloatProperty(
-        name="Cliff End",
-        min=0.0,
-        max=1.0,
-        default=0.6,
     )
 
     road_width_m: bpy.props.FloatProperty(
@@ -207,13 +225,11 @@ class Route2WorldProperties(bpy.types.PropertyGroup):
     terrain_transition_terrain_obj: bpy.props.PointerProperty(
         name="Terrain",
         type=bpy.types.Object,
-        poll=_poll_mesh_object,
     )
 
     terrain_transition_road_obj: bpy.props.PointerProperty(
         name="Road",
         type=bpy.types.Object,
-        poll=_poll_mesh_object,
     )
 
     terrain_transition_width_m: bpy.props.FloatProperty(
@@ -318,25 +334,39 @@ class ROUTE2WORLD_PT_Step2Textures(bpy.types.Panel):
         p = context.scene.route2world
         box = self.layout.box()
 
+        box.label(text=t("Targets"))
+        box.prop(p, "texture_terrain_obj", text=t("Terrain"))
+        box.prop(p, "texture_road_obj", text=t("Road"))
+        box.separator()
+
         box.label(text=t("Textures"), icon="TEXTURE")
         box.prop(p, "texture_root_dir", text=t("Texture Root"))
         row = box.row(align=True)
         row.prop(p, "apply_terrain_textures", toggle=True, text=t("Texture Terrain"))
         row.prop(p, "apply_road_textures", toggle=True, text=t("Texture Road"))
-        box.prop(p, "texture_variants", text=t("Texture Variants"))
-        box.prop(p, "texture_noise_scale", text=t("Mix Scale"))
-        box.prop(p, "texture_transition_width", text=t("Transition Width"))
 
-        box.separator()
-        box.label(text=t("Material Blending"))
-        box.prop(p, "terrain_ground_ratio", text=t("Ground Ratio"))
-        box.prop(p, "terrain_rock_ratio", text=t("Rock Ratio"))
-        box.prop(p, "terrain_height_blend", text=t("Height Blend"))
-        box.prop(p, "terrain_cliff_slope_start", text=t("Cliff Start"))
-        box.prop(p, "terrain_cliff_slope_end", text=t("Cliff End"))
+        if p.apply_terrain_textures:
+            box.separator()
+            box.label(text=t("Terrain"), icon="MESH_GRID")
+            box.prop(p, "terrain_ground_texture_dir", text=t("Ground Texture"))
+            box.prop(p, "terrain_rock_texture_dir", text=t("Rock Texture"))
+            box.prop(p, "terrain_snow_texture_dir", text=t("Snow Texture"))
+            box.prop(p, "terrain_texture_scale", text=t("Texture Scale"))
+            box.separator()
+            box.label(text=t("Material Blending"))
+            box.prop(p, "terrain_ground_ratio", text=t("Ground Ratio"))
+            box.prop(p, "terrain_rock_ratio", text=t("Rock Ratio"))
+            box.prop(p, "terrain_height_blend", text=t("Height Blend"))
+
+        if p.apply_road_textures:
+            box.separator()
+            box.label(text=t("Road"), icon="CURVE_DATA")
+            box.prop(p, "texture_variants", text=t("Texture Variants"))
+            box.prop(p, "texture_noise_scale", text=t("Mix Scale"))
 
         box.separator()
         box.operator("route2world.apply_textures", text=t("Apply Textures"))
+        box.operator("route2world.reset_textures", text=t("Reset Textures"))
 
 
 class ROUTE2WORLD_PT_Step3PostProcess(bpy.types.Panel):
@@ -350,12 +380,6 @@ class ROUTE2WORLD_PT_Step3PostProcess(bpy.types.Panel):
     def draw(self, context):
         p = context.scene.route2world
         box = self.layout.box()
-
-        box.label(text=t("Manual Tools"))
-        box.operator("route2world.setup_paint_mask", text=t("Start Painting"))
-        box.label(text=t("Red=Ground, Green=Rock, Blue=Snow"), icon="INFO")
-
-        box.separator()
         box.label(text=t("Post Process"))
         box.prop(p, "terrain_transition_terrain_obj", text=t("Terrain"))
         box.prop(p, "terrain_transition_road_obj", text=t("Road"))

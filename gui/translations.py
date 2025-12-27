@@ -47,10 +47,10 @@ TRANSLATIONS = {
         "Texture Variants": "纹理变体数",
         "Mix Scale": "混合缩放",
         "Transition Width": "过渡宽度",
-        "Manual Tools": "手动工具",
-        "Start Painting": "开始绘制",
-        "Red=Ground, Green=Rock, Blue=Snow": "红=地面, 绿=岩石, 蓝=雪",
-        
+        "Ground Texture": "地面纹理文件夹",
+        "Rock Texture": "岩石纹理文件夹",
+        "Snow Texture": "雪纹理文件夹",
+        "Texture Scale": "纹理缩放",
         # Scatter Panel
         "Targets": "目标设置",
         "Route": "路径对象",
@@ -105,6 +105,7 @@ TRANSLATIONS = {
         "Generate Route/Road/Terrain": "生成Route/Road/Terrain",
         "Step 2: Road & Terrain Textures": "步骤2：道路与地形贴图",
         "Apply Textures": "应用贴图",
+        "Reset Textures": "重置贴图",
         "Step 3: Terrain Post Process": "步骤3：地形后处理",
         "Step 4: Place Assets": "步骤4：放置资产",
         "Mapbox Configuration": "Mapbox配置",

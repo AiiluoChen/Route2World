@@ -13,7 +13,7 @@ from ..building.builder import (
     lower_terrain_under_road,
 )
 from ..parse.gpx import parse_gpx_track, project_to_local_meters, simplify_polyline_xy, smooth_polyline
-from ..material.manager import apply_textures_from_scene_settings
+from ..material.manager import apply_textures_from_scene_settings, reset_textures_data
 from .mapbox import MapboxTerrainDownloader
 
 
@@ -24,6 +24,7 @@ class ROUTE2WORLD_OT_GenerateFromGpx(bpy.types.Operator):
 
     def execute(self, context):
         p = context.scene.route2world
+        s = getattr(context.scene, "route2world_scatter", None)
         filepath = bpy.path.abspath(p.gpx_filepath) if p.gpx_filepath else ""
         if not filepath or not os.path.exists(filepath):
             self.report({"ERROR"}, "GPX file not found")
@@ -109,9 +110,10 @@ class ROUTE2WORLD_OT_GenerateFromGpx(bpy.types.Operator):
                 )
                 collection.objects.link(terrain_obj)
 
+        route_obj = None
         if p.create_route_curve:
-            curve_obj = create_route_curve("RWB_Route", route_raw)
-            collection.objects.link(curve_obj)
+            route_obj = create_route_curve("RWB_Route", route_raw)
+            collection.objects.link(route_obj)
 
         if p.create_road_mesh:
             road_obj = create_road_mesh("RWB_Road", route_raw, p.road_width_m)
@@ -125,6 +127,44 @@ class ROUTE2WORLD_OT_GenerateFromGpx(bpy.types.Operator):
             if road_for_terrain is not None:
                 lower_terrain_under_road(terrain_obj, road_for_terrain)
 
+        if terrain_obj is None:
+            terrain_obj = bpy.data.objects.get("RWB_Terrain")
+        if road_obj is None:
+            road_obj = bpy.data.objects.get("RWB_Road")
+        if route_obj is None:
+            route_obj = bpy.data.objects.get("RWB_Route")
+
+        if terrain_obj is not None:
+            try:
+                p.texture_terrain_obj = terrain_obj
+            except Exception:
+                pass
+            try:
+                p.terrain_transition_terrain_obj = terrain_obj
+            except Exception:
+                pass
+            if s is not None:
+                try:
+                    s.terrain_object = terrain_obj
+                except Exception:
+                    pass
+
+        if road_obj is not None:
+            try:
+                p.texture_road_obj = road_obj
+            except Exception:
+                pass
+            try:
+                p.terrain_transition_road_obj = road_obj
+            except Exception:
+                pass
+
+        if route_obj is not None and s is not None:
+            try:
+                s.route_object = route_obj
+            except Exception:
+                pass
+
         return {"FINISHED"}
 
 
@@ -135,10 +175,10 @@ class ROUTE2WORLD_OT_ApplyTextures(bpy.types.Operator):
 
     def execute(self, context):
         p = context.scene.route2world
-        terrain_obj = bpy.data.objects.get("RWB_Terrain")
-        road_obj = bpy.data.objects.get("RWB_Road")
+        terrain_obj = getattr(p, "texture_terrain_obj", None) or bpy.data.objects.get("RWB_Terrain")
+        road_obj = getattr(p, "texture_road_obj", None) or bpy.data.objects.get("RWB_Road")
         if terrain_obj is None and road_obj is None:
-            self.report({"ERROR"}, "RWB_Terrain / RWB_Road not found")
+            self.report({"ERROR"}, "Terrain/Road not found (set Targets or create RWB_Terrain/RWB_Road)")
             return {"CANCELLED"}
 
         msgs = apply_textures_from_scene_settings(p, terrain_obj=terrain_obj, road_obj=road_obj)
@@ -147,100 +187,14 @@ class ROUTE2WORLD_OT_ApplyTextures(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class ROUTE2WORLD_OT_SetupPaintMask(bpy.types.Operator):
-    bl_idname = "route2world.setup_paint_mask"
-    bl_label = "Setup Paint Mask"
-    bl_description = "Creates the color attribute for manual terrain painting and switches to Vertex Paint mode"
+class ROUTE2WORLD_OT_ResetTextures(bpy.types.Operator):
+    bl_idname = "route2world.reset_textures"
+    bl_label = "Reset Textures"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
-        obj = bpy.data.objects.get("RWB_Terrain")
-        if not obj:
-            self.report({"ERROR"}, "RWB_Terrain object not found")
-            return {"CANCELLED"}
-        
-        if obj.type != "MESH":
-            self.report({"ERROR"}, "RWB_Terrain is not a mesh")
-            return {"CANCELLED"}
-            
-        def _collection_is_in_tree(root: bpy.types.Collection, target: bpy.types.Collection) -> bool:
-            if root == target:
-                return True
-            for c in root.children:
-                if _collection_is_in_tree(c, target):
-                    return True
-            return False
-
-        def _layer_collection_path(
-            root: bpy.types.LayerCollection,
-            target: bpy.types.Collection,
-            acc: list[bpy.types.LayerCollection],
-        ) -> list[bpy.types.LayerCollection] | None:
-            if root.collection == target:
-                return acc + [root]
-            for lc in root.children:
-                found = _layer_collection_path(lc, target, acc + [root])
-                if found:
-                    return found
-            return None
-
-        if not obj.users_collection:
-            c = ensure_collection("Route2World")
-            if obj.name not in c.objects:
-                c.objects.link(obj)
-
-        scene_root = context.scene.collection
-        for c in list(obj.users_collection):
-            if not _collection_is_in_tree(scene_root, c):
-                try:
-                    scene_root.children.link(c)
-                except RuntimeError:
-                    pass
-
-        for c in list(obj.users_collection):
-            path = _layer_collection_path(context.view_layer.layer_collection, c, [])
-            if not path:
-                continue
-            for lc in path:
-                lc.exclude = False
-                lc.hide_viewport = False
-
-        try:
-            obj.hide_set(False)
-        except Exception:
-            obj.hide_viewport = False
-        obj.hide_select = False
-
-        if context.view_layer.objects.get(obj.name) is None:
-            try:
-                context.scene.collection.objects.link(obj)
-            except RuntimeError:
-                pass
-
-        if context.view_layer.objects.get(obj.name) is None:
-            self.report({"ERROR"}, "RWB_Terrain is not available in the active ViewLayer")
-            return {"CANCELLED"}
-
-        context.view_layer.objects.active = obj
-        obj.select_set(True)
-        
-        # Ensure attribute exists
-        attr_name = "Terrain_Region_Mask"
-        if attr_name not in obj.data.attributes:
-            obj.data.attributes.new(name=attr_name, type="BYTE_COLOR", domain="CORNER")
-            # Default to black (transparent/no override)
-            # Actually, newly created attributes are usually black (0,0,0,1) or white?
-            # Blender defaults vary. We can fill it with black just in case.
-            # But in vertex paint, default is usually white or black depending on method.
-            # Let's assume user starts painting.
-            
-        # Switch to Vertex Paint
-        if bpy.ops.object.mode_set.poll():
-            bpy.ops.object.mode_set(mode="VERTEX_PAINT")
-            
-        # Set brush color to Red (Ground) as default suggestion?
-        # That's hard to access via API robustly without context override.
-        # But we can report instructions.
-        
-        self.report({"INFO"}, "Switched to Vertex Paint. Paint Red=Ground, Green=Rock, Blue=Snow.")
+        p = context.scene.route2world
+        root = str(getattr(p, "texture_root_dir", "") or "")
+        msg = reset_textures_data(texture_root=root)
+        self.report({"INFO"}, str(msg))
         return {"FINISHED"}

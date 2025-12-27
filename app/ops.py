@@ -4,7 +4,6 @@ import bpy
 
 from ..building.builder import (
     add_solidify,
-    apply_road_terrain_blend,
     compute_route_bounds,
     create_road_mesh,
     create_route_curve,
@@ -13,7 +12,7 @@ from ..building.builder import (
     level_road_crossfall,
     lower_terrain_under_road,
 )
-from ..parse.gpx import parse_gpx_track, project_to_local_meters, simplify_polyline_xy
+from ..parse.gpx import parse_gpx_track, project_to_local_meters, simplify_polyline_xy, smooth_polyline
 from ..material.manager import apply_textures_from_scene_settings
 from .mapbox import MapboxTerrainDownloader
 
@@ -43,6 +42,13 @@ class ROUTE2WORLD_OT_GenerateFromGpx(bpy.types.Operator):
         if len(route_raw) < 2:
             self.report({"ERROR"}, "Route is too short")
             return {"CANCELLED"}
+
+        # Apply smoothing
+        route_raw = smooth_polyline(
+            route_raw,
+            window_size=p.gpx_smoothing_window,
+            iterations=p.gpx_smoothing_iterations,
+        )
 
         terrain_route = simplify_polyline_xy(route_raw, simplify_step_by_detail[detail])
         if len(terrain_route) > max_points_by_detail[detail]:
@@ -118,18 +124,26 @@ class ROUTE2WORLD_OT_GenerateFromGpx(bpy.types.Operator):
             road_for_terrain = road_obj or bpy.data.objects.get("RWB_Road")
             if road_for_terrain is not None:
                 lower_terrain_under_road(terrain_obj, road_for_terrain)
-                apply_road_terrain_blend(
-                    terrain_obj,
-                    road_for_terrain,
-                    enabled=bool(p.enable_road_terrain_blend),
-                    blend_start_m=float(p.road_terrain_blend_start_m),
-                    blend_end_m=float(p.road_terrain_blend_end_m),
-                )
+
+        return {"FINISHED"}
+
+
+class ROUTE2WORLD_OT_ApplyTextures(bpy.types.Operator):
+    bl_idname = "route2world.apply_textures"
+    bl_label = "Apply Textures"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        p = context.scene.route2world
+        terrain_obj = bpy.data.objects.get("RWB_Terrain")
+        road_obj = bpy.data.objects.get("RWB_Road")
+        if terrain_obj is None and road_obj is None:
+            self.report({"ERROR"}, "RWB_Terrain / RWB_Road not found")
+            return {"CANCELLED"}
 
         msgs = apply_textures_from_scene_settings(p, terrain_obj=terrain_obj, road_obj=road_obj)
         for m in msgs:
             self.report({"WARNING"}, str(m))
-
         return {"FINISHED"}
 
 

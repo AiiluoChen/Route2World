@@ -10,8 +10,15 @@ bl_info = {
 
 import bpy
 
-from .gui.main import ROUTE2WORLD_PT_Main, Route2WorldProperties
-from .app.ops import ROUTE2WORLD_OT_GenerateFromGpx, ROUTE2WORLD_OT_SetupPaintMask
+from .gui.main import (
+    ROUTE2WORLD_PT_Main,
+    ROUTE2WORLD_PT_Step1Generate,
+    ROUTE2WORLD_PT_Step2Textures,
+    ROUTE2WORLD_PT_Step3PostProcess,
+    Route2WorldProperties,
+)
+from .app.ops import ROUTE2WORLD_OT_ApplyTextures, ROUTE2WORLD_OT_GenerateFromGpx, ROUTE2WORLD_OT_SetupPaintMask
+from .postprocess.terrain_transition import ROUTE2WORLD_OT_ApplyTerrainTransition
 from .scatter.ops import ROUTE2WORLD_OT_ScatterRoadsideAssets
 from .gui.scatter import ROUTE2WORLD_PT_Procedural, Route2WorldScatterProperties
 from .gui.translations import t
@@ -59,9 +66,14 @@ _classes = (
     Route2WorldProperties,
     Route2WorldScatterProperties,
     ROUTE2WORLD_OT_GenerateFromGpx,
+    ROUTE2WORLD_OT_ApplyTextures,
     ROUTE2WORLD_OT_SetupPaintMask,
+    ROUTE2WORLD_OT_ApplyTerrainTransition,
     ROUTE2WORLD_OT_ScatterRoadsideAssets,
     ROUTE2WORLD_PT_Main,
+    ROUTE2WORLD_PT_Step1Generate,
+    ROUTE2WORLD_PT_Step2Textures,
+    ROUTE2WORLD_PT_Step3PostProcess,
     ROUTE2WORLD_PT_Procedural,
 )
 

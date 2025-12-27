@@ -98,3 +98,34 @@ def simplify_polyline_xy(points: list[Vector], min_step_m: float) -> list[Vector
     if dx * dx + dy * dy > 0.000001:
         out.append(points[-1])
     return out
+
+
+def smooth_polyline(points: list[Vector], window_size: int = 1, iterations: int = 1) -> list[Vector]:
+    if window_size < 1 or iterations < 1 or len(points) < 3:
+        return points[:]
+
+    # Use a separate buffer for reading/writing to avoid bias
+    current_points = points[:]
+    
+    for _ in range(iterations):
+        next_points = current_points[:]
+        length = len(current_points)
+        
+        for i in range(1, length - 1):
+            # Determine window bounds
+            start_idx = max(0, i - window_size)
+            end_idx = min(length, i + window_size + 1)
+            
+            # Compute average
+            sum_vec = Vector((0.0, 0.0, 0.0))
+            count = 0
+            for k in range(start_idx, end_idx):
+                sum_vec += current_points[k]
+                count += 1
+            
+            if count > 0:
+                next_points[i] = sum_vec / count
+                
+        current_points = next_points
+
+    return current_points

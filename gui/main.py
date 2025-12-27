@@ -1,6 +1,5 @@
 import bpy
 from ..material.manager import apply_textures_from_scene_settings
-from ..building.builder import apply_road_terrain_blend
 from .translations import t
 
 
@@ -19,16 +18,8 @@ def update_textures(self, context):
         )
 
 
-def update_road_terrain_blend(self, context):
-    terrain_obj = bpy.data.objects.get("RWB_Terrain")
-    road_obj = bpy.data.objects.get("RWB_Road")
-    apply_road_terrain_blend(
-        terrain_obj,
-        road_obj,
-        enabled=bool(self.enable_road_terrain_blend),
-        blend_start_m=float(self.road_terrain_blend_start_m),
-        blend_end_m=float(self.road_terrain_blend_end_m),
-    )
+def _poll_mesh_object(self, obj):
+    return obj is not None and obj.type == "MESH"
 
 
 class Route2WorldProperties(bpy.types.PropertyGroup):
@@ -36,6 +27,22 @@ class Route2WorldProperties(bpy.types.PropertyGroup):
         name="GPX",
         description="GPX track file",
         subtype="FILE_PATH",
+    )
+
+    gpx_smoothing_window: bpy.props.IntProperty(
+        name="Smoothing Window",
+        min=1,
+        max=50,
+        default=5,
+        description="Window size for moving average smoothing",
+    )
+
+    gpx_smoothing_iterations: bpy.props.IntProperty(
+        name="Smoothing Iterations",
+        min=0,
+        max=20,
+        default=1,
+        description="Number of smoothing passes",
     )
 
     process_mode: bpy.props.EnumProperty(
@@ -154,28 +161,6 @@ class Route2WorldProperties(bpy.types.PropertyGroup):
         default=3.0,
     )
 
-    enable_road_terrain_blend: bpy.props.BoolProperty(
-        name="Road-Terrain Blend",
-        default=True,
-        update=update_road_terrain_blend,
-    )
-
-    road_terrain_blend_start_m: bpy.props.FloatProperty(
-        name="Blend Start (m)",
-        min=0.0,
-        soft_max=50.0,
-        default=0.0,
-        update=update_road_terrain_blend,
-    )
-
-    road_terrain_blend_end_m: bpy.props.FloatProperty(
-        name="Blend End (m)",
-        min=0.0,
-        soft_max=200.0,
-        default=10.0,
-        update=update_road_terrain_blend,
-    )
-
     terrain_margin_m: bpy.props.FloatProperty(
         name="Terrain Margin (m)",
         min=0.0,
@@ -219,6 +204,46 @@ class Route2WorldProperties(bpy.types.PropertyGroup):
         default=True,
     )
 
+    terrain_transition_terrain_obj: bpy.props.PointerProperty(
+        name="Terrain",
+        type=bpy.types.Object,
+        poll=_poll_mesh_object,
+    )
+
+    terrain_transition_road_obj: bpy.props.PointerProperty(
+        name="Road",
+        type=bpy.types.Object,
+        poll=_poll_mesh_object,
+    )
+
+    terrain_transition_width_m: bpy.props.FloatProperty(
+        name="Transition Width (m)",
+        min=0.0,
+        soft_max=50.0,
+        default=10.0,
+    )
+
+    terrain_transition_flat_width_m: bpy.props.FloatProperty(
+        name="Flat Width (m)",
+        min=0.0,
+        soft_max=5.0,
+        default=1.0,
+    )
+
+    terrain_transition_clearance_m: bpy.props.FloatProperty(
+        name="Clearance (m)",
+        min=0.0,
+        soft_max=1.0,
+        default=0.02,
+    )
+
+    terrain_transition_subdivide_levels: bpy.props.IntProperty(
+        name="Subdivide Levels",
+        min=0,
+        max=6,
+        default=0,
+    )
+
 
 class ROUTE2WORLD_PT_Main(bpy.types.Panel):
     bl_label = "Route2World"
@@ -228,84 +253,114 @@ class ROUTE2WORLD_PT_Main(bpy.types.Panel):
     bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
-        p = context.scene.route2world
-        layout = self.layout
+        self.layout.label(text=t("Workflow"))
 
-        # 1. Core Generation
-        box = layout.box()
-        box.label(text=t("Core Generation"))
+
+class ROUTE2WORLD_PT_Step1Generate(bpy.types.Panel):
+    bl_label = t("Step 1: Generate Route/Road/Terrain")
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "Route2World"
+    bl_parent_id = "ROUTE2WORLD_PT_Main"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        p = context.scene.route2world
+        box = self.layout.box()
+
         box.prop(p, "gpx_filepath", text=t("GPX"))
-        
+
+        row = box.row(align=True)
+        row.prop(p, "gpx_smoothing_window", text=t("Smoothing Window"))
+        row.prop(p, "gpx_smoothing_iterations", text=t("Smoothing Iterations"))
+
         row = box.row()
         row.prop(p, "process_mode", expand=True, text=t("Mode"))
-        
-        btn_text = t("Build World")
-        if p.process_mode == "MAPBOX":
-            btn_text = t("Download Terrain")
-            
-        box.operator("route2world.generate_from_gpx", text=btn_text)
 
-        # 2. Scene Objects
-        box = layout.box()
-        box.label(text=t("Scene Objects"))
         row = box.row(align=True)
         row.prop(p, "create_route_curve", toggle=True, text=t("Create Route Curve"))
         row.prop(p, "create_road_mesh", toggle=True, text=t("Create Road Mesh"))
         row.prop(p, "create_terrain", toggle=True, text=t("Create Terrain"))
 
-        # 3. Detailed Settings
-        box = layout.box()
-        box.label(text=t("Detailed Settings"))
-        
-        # Terrain Sub-panel
         if p.create_terrain:
-            col = box.column()
-            col.label(text=t("Terrain Settings"), icon="MESH_DATA")
-            col.prop(p, "terrain_margin_m", text=t("Terrain Margin (m)"))
-            col.prop(p, "terrain_detail", text=t("Detail"))
+            box.separator()
+            box.label(text=t("Terrain Settings"), icon="MESH_DATA")
+            box.prop(p, "terrain_margin_m", text=t("Terrain Margin (m)"))
+            box.prop(p, "terrain_detail", text=t("Detail"))
             if p.process_mode == "AUTO":
-                col.prop(p, "terrain_style", text=t("Style"))
-                col.prop(p, "seed", text=t("Seed"))
-            
-            col.separator()
-            col.label(text=t("Material Blending"))
-            col.prop(p, "terrain_ground_ratio", text=t("Ground Ratio"))
-            col.prop(p, "terrain_rock_ratio", text=t("Rock Ratio"))
-            col.prop(p, "terrain_height_blend", text=t("Height Blend"))
-            col.prop(p, "terrain_cliff_slope_start", text=t("Cliff Start"))
-            col.prop(p, "terrain_cliff_slope_end", text=t("Cliff End"))
-            if p.create_road_mesh:
-                col.separator()
-                col.label(text=t("Road-Terrain Blend"))
-                col.prop(p, "enable_road_terrain_blend", text=t("Enable Blend"))
-                if p.enable_road_terrain_blend:
-                    col.prop(p, "road_terrain_blend_start_m", text=t("Blend Start (m)"))
-                    col.prop(p, "road_terrain_blend_end_m", text=t("Blend End (m)"))
-            box.separator()
+                box.prop(p, "terrain_style", text=t("Style"))
+                box.prop(p, "seed", text=t("Seed"))
 
-        # Road Sub-panel
         if p.create_road_mesh:
-            col = box.column()
-            col.label(text=t("Road Settings"), icon="DRIVER")
-            col.prop(p, "road_width_m", text=t("Road Width (m)"))
-            col.prop(p, "road_offset_m", text=t("Road Offset (m)"))
-            col.prop(p, "road_embed_m", text=t("Road Embed (m)"))
-            col.prop(p, "road_thickness_m", text=t("Road Thickness (m)"))
             box.separator()
+            box.label(text=t("Road Settings"), icon="DRIVER")
+            box.prop(p, "road_width_m", text=t("Road Width (m)"))
+            box.prop(p, "road_offset_m", text=t("Road Offset (m)"))
+            box.prop(p, "road_embed_m", text=t("Road Embed (m)"))
+            box.prop(p, "road_thickness_m", text=t("Road Thickness (m)"))
 
-        # Texture Sub-panel
-        col = box.column()
-        col.label(text=t("Textures"), icon="TEXTURE")
-        col.prop(p, "texture_root_dir", text=t("Texture Root"))
-        row = col.row(align=True)
+        box.separator()
+        btn_text = t("Generate Route/Road/Terrain")
+        if p.process_mode == "MAPBOX":
+            btn_text = t("Download Terrain")
+        box.operator("route2world.generate_from_gpx", text=btn_text)
+
+
+class ROUTE2WORLD_PT_Step2Textures(bpy.types.Panel):
+    bl_label = t("Step 2: Road & Terrain Textures")
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "Route2World"
+    bl_parent_id = "ROUTE2WORLD_PT_Main"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        p = context.scene.route2world
+        box = self.layout.box()
+
+        box.label(text=t("Textures"), icon="TEXTURE")
+        box.prop(p, "texture_root_dir", text=t("Texture Root"))
+        row = box.row(align=True)
         row.prop(p, "apply_terrain_textures", toggle=True, text=t("Texture Terrain"))
         row.prop(p, "apply_road_textures", toggle=True, text=t("Texture Road"))
-        col.prop(p, "texture_variants", text=t("Texture Variants"))
-        col.prop(p, "texture_noise_scale", text=t("Mix Scale"))
-        col.prop(p, "texture_transition_width", text=t("Transition Width"))
+        box.prop(p, "texture_variants", text=t("Texture Variants"))
+        box.prop(p, "texture_noise_scale", text=t("Mix Scale"))
+        box.prop(p, "texture_transition_width", text=t("Transition Width"))
 
-        # 4. Tools
-        box = layout.box()
+        box.separator()
+        box.label(text=t("Material Blending"))
+        box.prop(p, "terrain_ground_ratio", text=t("Ground Ratio"))
+        box.prop(p, "terrain_rock_ratio", text=t("Rock Ratio"))
+        box.prop(p, "terrain_height_blend", text=t("Height Blend"))
+        box.prop(p, "terrain_cliff_slope_start", text=t("Cliff Start"))
+        box.prop(p, "terrain_cliff_slope_end", text=t("Cliff End"))
+
+        box.separator()
+        box.operator("route2world.apply_textures", text=t("Apply Textures"))
+
+
+class ROUTE2WORLD_PT_Step3PostProcess(bpy.types.Panel):
+    bl_label = t("Step 3: Terrain Post Process")
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "Route2World"
+    bl_parent_id = "ROUTE2WORLD_PT_Main"
+    bl_options = {"DEFAULT_CLOSED"}
+
+    def draw(self, context):
+        p = context.scene.route2world
+        box = self.layout.box()
+
         box.label(text=t("Manual Tools"))
         box.operator("route2world.setup_paint_mask", text=t("Start Painting"))
         box.label(text=t("Red=Ground, Green=Rock, Blue=Snow"), icon="INFO")
+
+        box.separator()
+        box.label(text=t("Post Process"))
+        box.prop(p, "terrain_transition_terrain_obj", text=t("Terrain"))
+        box.prop(p, "terrain_transition_road_obj", text=t("Road"))
+        box.prop(p, "terrain_transition_width_m", text=t("Transition Width (m)"))
+        box.prop(p, "terrain_transition_flat_width_m", text=t("Flat Width (m)"))
+        box.prop(p, "terrain_transition_clearance_m", text=t("Clearance (m)"))
+        box.prop(p, "terrain_transition_subdivide_levels", text=t("Subdivide Levels"))
+        box.operator("route2world.apply_terrain_transition", text=t("Apply Terrain Transition"))

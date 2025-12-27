@@ -14,6 +14,41 @@ class ROUTE2WORLD_OT_ScatterRoadsideAssets(bpy.types.Operator):
         p = context.scene.route2world
         s = context.scene.route2world_scatter
 
+        def _collection_is_in_tree(root: bpy.types.Collection, target: bpy.types.Collection) -> bool:
+            if root == target:
+                return True
+            for c in root.children:
+                if _collection_is_in_tree(c, target):
+                    return True
+            return False
+
+        def _layer_collection_path(
+            root: bpy.types.LayerCollection,
+            target: bpy.types.Collection,
+            acc: list[bpy.types.LayerCollection],
+        ) -> list[bpy.types.LayerCollection] | None:
+            if root.collection == target:
+                return acc + [root]
+            for lc in root.children:
+                found = _layer_collection_path(lc, target, acc + [root])
+                if found:
+                    return found
+            return None
+
+        def _ensure_collection_visible(c: bpy.types.Collection) -> None:
+            scene_root = context.scene.collection
+            if not _collection_is_in_tree(scene_root, c):
+                try:
+                    scene_root.children.link(c)
+                except RuntimeError:
+                    pass
+            path = _layer_collection_path(context.view_layer.layer_collection, c, [])
+            if not path:
+                return
+            for lc in path:
+                lc.exclude = False
+                lc.hide_viewport = False
+
         settings = ScatterRoadsideSettings(
             seed=int(s.scatter_seed),
             road_width_m=float(p.road_width_m),
@@ -67,5 +102,15 @@ class ROUTE2WORLD_OT_ScatterRoadsideAssets(bpy.types.Operator):
         if created <= 0:
             self.report({"WARNING"}, message or "No instances created")
         else:
+            scatter_collection = bpy.data.collections.get("RWB_Scatter")
+            if scatter_collection is not None:
+                _ensure_collection_visible(scatter_collection)
+            points_obj = bpy.data.objects.get("RWB_ScatterPoints")
+            if points_obj is not None:
+                try:
+                    points_obj.hide_set(False)
+                except Exception:
+                    points_obj.hide_viewport = False
+                points_obj.hide_render = False
             self.report({"INFO"}, f"Created {created} instances")
         return {"FINISHED"}

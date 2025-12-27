@@ -88,7 +88,7 @@ class Route2WorldScatterProperties(bpy.types.PropertyGroup):
 
 
 class ROUTE2WORLD_PT_Procedural(bpy.types.Panel):
-    bl_label = "Procedural"
+    bl_label = t("Step 4: Place Assets")
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "Route2World"
@@ -96,107 +96,88 @@ class ROUTE2WORLD_PT_Procedural(bpy.types.Panel):
     bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
-        p = context.scene.route2world
         s = context.scene.route2world_scatter
-        layout = self.layout
+        box = self.layout.box()
 
-        # 1. Target Settings
-        box = layout.box()
         box.label(text=t("Targets"))
         box.prop(s, "route_object", text=t("Route"))
         box.prop(s, "terrain_object", text=t("Terrain"))
         box.prop(s, "assets_root_dir", text=t("Assets Root"))
 
-        # 2. Scatter Control
-        box = layout.box()
+        box.separator()
         box.label(text=t("Scatter Control"))
-        
+
         row = box.row()
         row.prop(s, "scatter_side", expand=True, text=t("Side"))
-        
+
         col = box.column()
         col.prop(s, "scatter_seed", text=t("Seed"))
         col.prop(s, "max_instances", text=t("Max Instances"))
         col.prop(s, "road_no_spawn_m", text=t("Road No-Spawn (m)"))
-        
+
         box.separator()
         box.operator("route2world.scatter_roadside_assets", text=t("Scatter Assets"))
 
-        # 3. Asset Types
-        box = layout.box()
+        box.separator()
         box.label(text=t("Asset Types"))
-        
-        # Buildings
+
         col = box.column()
         row = col.row()
         row.prop(s, "building_enabled", text=t("Buildings"), icon="BUILDING_DATA", toggle=True)
-        
         if s.building_enabled:
-            sub = col.box()
-            sub.prop(s, "building_spacing_m", text=t("Building Spacing (m)"))
-            sub.prop(s, "building_probability", text=t("Building Probability"))
-            sub.prop(s, "building_min_distance_m", text=t("Building Min Distance (m)"))
-            
-            sub.label(text=t("Offset"), icon="TRANSFORM")
-            row = sub.row(align=True)
+            col.prop(s, "building_spacing_m", text=t("Building Spacing (m)"))
+            col.prop(s, "building_probability", text=t("Building Probability"))
+            col.prop(s, "building_min_distance_m", text=t("Building Min Distance (m)"))
+
+            col.label(text=t("Offset"), icon="TRANSFORM")
+            row = col.row(align=True)
             row.prop(s, "building_offset_min_m", text=t("Min"))
             row.prop(s, "building_offset_max_m", text=t("Max"))
-            
-            sub.label(text=t("Scale"), icon="FULLSCREEN_ENTER")
-            row = sub.row(align=True)
+
+            col.label(text=t("Scale"), icon="FULLSCREEN_ENTER")
+            row = col.row(align=True)
             row.prop(s, "building_scale_min", text=t("Min"))
             row.prop(s, "building_scale_max", text=t("Max"))
-            
-            sub.label(text=t("Cluster"), icon="GROUP")
-            row = sub.row(align=True)
+
+            col.label(text=t("Cluster"), icon="GROUP")
+            row = col.row(align=True)
             row.prop(s, "building_cluster_min", text=t("Min"))
             row.prop(s, "building_cluster_max", text=t("Max"))
-            
-            sub.prop(s, "building_cluster_along_m", text=t("Building Cluster Along (m)"))
-            sub.prop(s, "building_cluster_out_m", text=t("Building Cluster Out (m)"))
-            
-        col.separator()
+            col.prop(s, "building_cluster_along_m", text=t("Building Cluster Along (m)"))
+            col.prop(s, "building_cluster_out_m", text=t("Building Cluster Out (m)"))
 
-        # Trees
-        col = box.column()
+        col.separator()
         row = col.row()
         row.prop(s, "tree_enabled", text=t("Trees"), icon="OUTLINER_OB_CURVE", toggle=True)
-        
         if s.tree_enabled:
-            sub = col.box()
-            sub.prop(s, "tree_spacing_m", text=t("Tree Spacing (m)"))
-            sub.prop(s, "tree_probability", text=t("Tree Probability"))
-            sub.prop(s, "tree_min_distance_m", text=t("Tree Min Distance (m)"))
-            
-            sub.label(text=t("Offset"), icon="TRANSFORM")
-            row = sub.row(align=True)
+            col.prop(s, "tree_spacing_m", text=t("Tree Spacing (m)"))
+            col.prop(s, "tree_probability", text=t("Tree Probability"))
+            col.prop(s, "tree_min_distance_m", text=t("Tree Min Distance (m)"))
+
+            col.label(text=t("Offset"), icon="TRANSFORM")
+            row = col.row(align=True)
             row.prop(s, "tree_offset_min_m", text=t("Min"))
             row.prop(s, "tree_offset_max_m", text=t("Max"))
-            
-            sub.label(text=t("Scale"), icon="FULLSCREEN_ENTER")
-            row = sub.row(align=True)
+
+            col.label(text=t("Scale"), icon="FULLSCREEN_ENTER")
+            row = col.row(align=True)
             row.prop(s, "tree_scale_min", text=t("Min"))
             row.prop(s, "tree_scale_max", text=t("Max"))
 
         col.separator()
-        
-        # Grass
-        col = box.column()
         row = col.row()
         row.prop(s, "grass_enabled", text=t("Grass"), icon="HAIR", toggle=True)
-        
         if s.grass_enabled:
-            sub = col.box()
-            sub.prop(s, "grass_spacing_m", text=t("Grass Spacing (m)"))
-            sub.prop(s, "grass_probability", text=t("Grass Probability"))
-            sub.prop(s, "grass_min_distance_m", text=t("Grass Min Distance (m)"))
-            
-            sub.label(text=t("Offset"), icon="TRANSFORM")
-            row = sub.row(align=True)
+            col.prop(s, "grass_spacing_m", text=t("Grass Spacing (m)"))
+            col.prop(s, "grass_probability", text=t("Grass Probability"))
+            col.prop(s, "grass_min_distance_m", text=t("Grass Min Distance (m)"))
+
+            col.label(text=t("Offset"), icon="TRANSFORM")
+            row = col.row(align=True)
             row.prop(s, "grass_offset_min_m", text=t("Min"))
             row.prop(s, "grass_offset_max_m", text=t("Max"))
-            
-            sub.label(text=t("Scale"), icon="FULLSCREEN_ENTER")
-            row = sub.row(align=True)
+
+            col.label(text=t("Scale"), icon="FULLSCREEN_ENTER")
+            row = col.row(align=True)
             row.prop(s, "grass_scale_min", text=t("Min"))
             row.prop(s, "grass_scale_max", text=t("Max"))

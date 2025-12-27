@@ -432,6 +432,104 @@ def _texture_set_nodes(
     return color_out, rough_out, normal_out, disp_out
 
 
+def _mix_layers_height_aware(
+    nt: bpy.types.NodeTree,
+    a,
+    b,
+    factor,
+    contrast: float = 0.2,
+    *,
+    x: float,
+    y: float
+) -> tuple:
+    # a/b are tuples: (color, rough, normal, disp)
+    # factor is 0..1 (0->a, 1->b)
+    # contrast controls hardness of blend
+
+    # Logic:
+    # h1_mod = h1 + (1 - factor)
+    # h2_mod = h2 + factor
+    # diff = h2_mod - h1_mod
+    # mask = smoothstep(-contrast, contrast, diff)
+    
+    # But wait, standard height blend logic is usually:
+    # mask = (h1 + fac) > (h2 + (1-fac))  (if fac=0 is h1)
+    # Let's align with mix factor convention: 0->A, 1->B
+    # A_weight = (1 - factor)
+    # B_weight = factor
+    # A_val = hA + A_weight
+    # B_val = hB + B_weight
+    # if B_val > A_val -> show B (factor=1)
+    
+    # 1. Calculate weights
+    sub = _new_node(nt, "ShaderNodeMath", x, y + 200)
+    sub.operation = "SUBTRACT"
+    sub.inputs[0].default_value = 1.0
+    nt.links.new(factor, sub.inputs[1])
+    w_a = sub.outputs["Value"]
+    w_b = factor
+    
+    # 2. Add height
+    add_a = _new_node(nt, "ShaderNodeMath", x + 200, y + 200)
+    add_a.operation = "ADD"
+    nt.links.new(a[3], add_a.inputs[0])
+    nt.links.new(w_a, add_a.inputs[1])
+    
+    add_b = _new_node(nt, "ShaderNodeMath", x + 200, y)
+    add_b.operation = "ADD"
+    nt.links.new(b[3], add_b.inputs[0])
+    nt.links.new(w_b, add_b.inputs[1])
+    
+    # 3. Diff = B_val - A_val
+    diff = _new_node(nt, "ShaderNodeMath", x + 400, y + 100)
+    diff.operation = "SUBTRACT"
+    nt.links.new(add_b.outputs["Value"], diff.inputs[0])
+    nt.links.new(add_a.outputs["Value"], diff.inputs[1])
+    
+    # 4. Smoothstep
+    ramp = _new_node(nt, "ShaderNodeMapRange", x + 600, y + 100)
+    c = max(0.001, float(contrast))
+    ramp.inputs["From Min"].default_value = -c
+    ramp.inputs["From Max"].default_value = c
+    ramp.inputs["To Min"].default_value = 0.0
+    ramp.inputs["To Max"].default_value = 1.0
+    ramp.clamp = True
+    if hasattr(ramp, "interpolation_type"):
+        ramp.interpolation_type = "SMOOTHSTEP"
+    nt.links.new(diff.outputs["Value"], ramp.inputs["Value"])
+    
+    new_factor = ramp.outputs["Result"]
+
+    mix_c = _new_node(nt, "ShaderNodeMixRGB", x + 800, y)
+    mix_c.blend_type = "MIX"
+    nt.links.new(new_factor, mix_c.inputs["Fac"])
+    nt.links.new(a[0], mix_c.inputs["Color1"])
+    nt.links.new(b[0], mix_c.inputs["Color2"])
+
+    mix_r = _new_node(nt, "ShaderNodeMix", x + 800, y - 220)
+    mix_r.data_type = "FLOAT"
+    nt.links.new(new_factor, mix_r.inputs["Factor"])
+    nt.links.new(a[1], mix_r.inputs["A"])
+    nt.links.new(b[1], mix_r.inputs["B"])
+
+    mix_n = _new_node(nt, "ShaderNodeMix", x + 800, y - 440)
+    mix_n.data_type = "VECTOR"
+    nt.links.new(new_factor, mix_n.inputs["Factor"])
+    nt.links.new(a[2], mix_n.inputs["A"])
+    nt.links.new(b[2], mix_n.inputs["B"])
+    norm = _new_node(nt, "ShaderNodeVectorMath", x + 1000, y - 440)
+    norm.operation = "NORMALIZE"
+    nt.links.new(mix_n.outputs["Result"], norm.inputs[0])
+
+    mix_d = _new_node(nt, "ShaderNodeMix", x + 800, y - 660)
+    mix_d.data_type = "FLOAT"
+    nt.links.new(new_factor, mix_d.inputs["Factor"])
+    nt.links.new(a[3], mix_d.inputs["A"])
+    nt.links.new(b[3], mix_d.inputs["B"])
+
+    return (mix_c.outputs["Color"], mix_r.outputs["Result"], norm.outputs["Vector"], mix_d.outputs["Result"])
+
+
 def _mix_layers(nt: bpy.types.NodeTree, a, b, factor, *, x: float, y: float) -> tuple:
     mix_c = _new_node(nt, "ShaderNodeMixRGB", x, y)
     mix_c.blend_type = "MIX"
@@ -541,7 +639,8 @@ def _build_category_mix(
     picked = items[: min(max_variants, len(items))]
     
     if len(picked) == 1:
-        return _texture_set_nodes(nt, uv_socket, picked[0], x=x, y=y)
+        # If only one texture set, duplicate it to allow variation mixing
+        picked = [picked[0], picked[0], picked[0]]
 
     # Create sub-region blending using Voronoi Smooth F1
     # This ensures "irregular but rounded polygon shapes" and "smooth transitions"
@@ -562,32 +661,58 @@ def _build_category_mix(
     sep = _new_node(nt, "ShaderNodeSeparateColor", x + 600, y)
     nt.links.new(col_out, sep.inputs[0])
     
-    # Generate layers
+    # Generate layers with Random UV Transforms
     layers = []
     current_y = y
+    
+    # Random generator for UV transforms
+    uv_rng = random.Random(int(seed) ^ 0x5555)
+    
     for i, p in enumerate(picked):
-        layers.append(_texture_set_nodes(nt, uv_socket, p, x=x, y=current_y))
-        current_y -= 250 # Stagger nodes vertically
+        # Create a randomized mapping for this layer
+        # Rotation: 0-360 random
+        # Scale: 0.9-1.1 variation
+        # Location: random offset
+        
+        mapping = _new_node(nt, "ShaderNodeMapping", x - 200, current_y)
+        # Link original UV
+        nt.links.new(uv_socket, mapping.inputs["Vector"])
+        
+        # Apply random transforms
+        # Random Rotation Z
+        mapping.inputs["Rotation"].default_value[2] = uv_rng.uniform(0.0, 6.28318)
+        # Random Scale (uniform xy)
+        s_var = uv_rng.uniform(0.9, 1.1)
+        mapping.inputs["Scale"].default_value = (s_var, s_var, 1.0)
+        # Random Location
+        mapping.inputs["Location"].default_value = (uv_rng.uniform(-100.0, 100.0), uv_rng.uniform(-100.0, 100.0), 0.0)
+        
+        transformed_uv = mapping.outputs["Vector"]
+        
+        layers.append(_texture_set_nodes(nt, transformed_uv, p, x=x, y=current_y))
+        current_y -= 450 # Stagger nodes vertically (increased spacing)
         
     # Mix layers based on Voronoi color channels
     # We have up to 4 layers: A, B, C, D
     # We have 3 smooth random values: R, G, B
     
+    # Use Height Aware Mixing
+    
     # Mix 0 and 1 using Red
     if len(layers) >= 2:
-        mix01 = _mix_layers(nt, layers[0], layers[1], sep.outputs[0], x=x + 800, y=y)
+        mix01 = _mix_layers_height_aware(nt, layers[0], layers[1], sep.outputs[0], contrast=0.2, x=x + 1200, y=y)
     else:
         mix01 = layers[0]
         
     if len(layers) >= 3:
         # Mix (0-1) and 2 using Green
-        mix012 = _mix_layers(nt, mix01, layers[2], sep.outputs[1], x=x + 1000, y=y)
+        mix012 = _mix_layers_height_aware(nt, mix01, layers[2], sep.outputs[1], contrast=0.2, x=x + 1400, y=y)
     else:
         mix012 = mix01
         
     if len(layers) >= 4:
         # Mix (0-1-2) and 3 using Blue
-        mix0123 = _mix_layers(nt, mix012, layers[3], sep.outputs[2], x=x + 1200, y=y)
+        mix0123 = _mix_layers_height_aware(nt, mix012, layers[3], sep.outputs[2], contrast=0.2, x=x + 1600, y=y)
         return mix0123
         
     return mix012
@@ -728,63 +853,21 @@ def apply_terrain_material(
     rock_layer = _texture_set_nodes(nt, uv_scaled, rock_set, x=0, y=100)
     snow_layer = _texture_set_nodes(nt, uv_scaled, snow_set, x=0, y=-320)
 
-    mix_gr = _new_node(nt, "ShaderNodeMixRGB", 760, 320)
-    mix_gr.inputs["Fac"].default_value = 0.0
-    nt.links.new(t1, mix_gr.inputs["Fac"])
-    nt.links.new(ground_layer[0], mix_gr.inputs["Color1"])
-    nt.links.new(rock_layer[0], mix_gr.inputs["Color2"])
-
-    mix_rs = _new_node(nt, "ShaderNodeMixRGB", 980, 320)
-    mix_rs.inputs["Fac"].default_value = 0.0
-    nt.links.new(t2, mix_rs.inputs["Fac"])
-    nt.links.new(mix_gr.outputs["Color"], mix_rs.inputs["Color1"])
-    nt.links.new(snow_layer[0], mix_rs.inputs["Color2"])
-    base_color = mix_rs.outputs["Color"]
-
-    mixr_gr = _new_node(nt, "ShaderNodeMix", 760, 100)
-    mixr_gr.data_type = "FLOAT"
-    nt.links.new(t1, mixr_gr.inputs["Factor"])
-    nt.links.new(ground_layer[1], mixr_gr.inputs["A"])
-    nt.links.new(rock_layer[1], mixr_gr.inputs["B"])
-
-    mixr_rs = _new_node(nt, "ShaderNodeMix", 980, 100)
-    mixr_rs.data_type = "FLOAT"
-    nt.links.new(t2, mixr_rs.inputs["Factor"])
-    nt.links.new(mixr_gr.outputs["Result"], mixr_rs.inputs["A"])
-    nt.links.new(snow_layer[1], mixr_rs.inputs["B"])
-    base_rough = mixr_rs.outputs["Result"]
-
-    mixn_gr = _new_node(nt, "ShaderNodeMix", 760, -120)
-    mixn_gr.data_type = "VECTOR"
-    nt.links.new(t1, mixn_gr.inputs["Factor"])
-    nt.links.new(ground_layer[2], mixn_gr.inputs["A"])
-    nt.links.new(rock_layer[2], mixn_gr.inputs["B"])
-
-    mixn_rs = _new_node(nt, "ShaderNodeMix", 980, -120)
-    mixn_rs.data_type = "VECTOR"
-    nt.links.new(t2, mixn_rs.inputs["Factor"])
-    nt.links.new(mixn_gr.outputs["Result"], mixn_rs.inputs["A"])
-    nt.links.new(snow_layer[2], mixn_rs.inputs["B"])
-
-    base_norm = _new_node(nt, "ShaderNodeVectorMath", 1200, -120)
-    base_norm.operation = "NORMALIZE"
-    nt.links.new(mixn_rs.outputs["Result"], base_norm.inputs[0])
-
-    mixd_gr = _new_node(nt, "ShaderNodeMix", 760, -340)
-    mixd_gr.data_type = "FLOAT"
-    nt.links.new(t1, mixd_gr.inputs["Factor"])
-    nt.links.new(ground_layer[3], mixd_gr.inputs["A"])
-    nt.links.new(rock_layer[3], mixd_gr.inputs["B"])
-
-    mixd_rs = _new_node(nt, "ShaderNodeMix", 980, -340)
-    mixd_rs.data_type = "FLOAT"
-    nt.links.new(t2, mixd_rs.inputs["Factor"])
-    nt.links.new(mixd_gr.outputs["Result"], mixd_rs.inputs["A"])
-    nt.links.new(snow_layer[3], mixd_rs.inputs["B"])
-    base_disp = mixd_rs.outputs["Result"]
+    # Use Height Aware Mixing for Terrain Layers
+    # Ground -> Rock
+    mix_gr = _mix_layers_height_aware(nt, ground_layer, rock_layer, t1, contrast=0.2, x=760, y=320)
+    
+    # (Ground/Rock) -> Snow
+    mix_rs = _mix_layers_height_aware(nt, mix_gr, snow_layer, t2, contrast=0.2, x=980, y=320)
+    
+    base_color = mix_rs[0]
+    base_rough = mix_rs[1]
+    base_norm = mix_rs[2]
+    base_disp = mix_rs[3]
+    
     nt.links.new(base_color, bsdf.inputs["Base Color"])
     nt.links.new(base_rough, bsdf.inputs["Roughness"])
-    nt.links.new(base_norm.outputs["Vector"], bsdf.inputs["Normal"])
+    nt.links.new(base_norm, bsdf.inputs["Normal"])
 
     disp = _new_node(nt, "ShaderNodeDisplacement", 1400, -340)
     disp.inputs["Midlevel"].default_value = 0.5

@@ -662,3 +662,288 @@ def create_terrain(
 
 def compute_route_bounds(points: list[Vector], margin_m: float) -> Bounds2D:
     return bounds_from_points_xy(points).expand(float(max(0.0, margin_m)))
+
+
+_RWB_ROAD_TERRAIN_BLEND_GN = "RWB_RoadTerrainBlend_GN"
+_RWB_ROAD_TERRAIN_BLEND_MOD = "RWB_RoadTerrainBlend"
+
+
+def _clear_node_group_interface(group: bpy.types.NodeTree) -> None:
+    iface = getattr(group, "interface", None)
+    if iface is None:
+        try:
+            group.inputs.clear()
+            group.outputs.clear()
+        except Exception:
+            pass
+        return
+
+    items = list(getattr(iface, "items_tree", []))
+    for item in items:
+        if getattr(item, "item_type", None) == "SOCKET":
+            try:
+                iface.items_tree.remove(item)
+            except Exception:
+                pass
+
+
+def _new_iface_socket(
+    group: bpy.types.NodeTree,
+    *,
+    name: str,
+    in_out: str,
+    socket_type: str,
+):
+    iface = getattr(group, "interface", None)
+    if iface is not None and hasattr(iface, "new_socket"):
+        return iface.new_socket(name=name, in_out=in_out, socket_type=socket_type)
+    if in_out == "INPUT":
+        return group.inputs.new(socket_type, name)
+    return group.outputs.new(socket_type, name)
+
+
+def _iface_socket_identifier(group: bpy.types.NodeTree, *, name: str, in_out: str) -> str | None:
+    iface = getattr(group, "interface", None)
+    if iface is not None and hasattr(iface, "items_tree"):
+        for item in iface.items_tree:
+            if getattr(item, "item_type", None) != "SOCKET":
+                continue
+            if getattr(item, "name", None) != name:
+                continue
+            if getattr(item, "in_out", None) != in_out:
+                continue
+            ident = getattr(item, "identifier", None)
+            if ident:
+                return str(ident)
+        return None
+
+    coll = group.inputs if in_out == "INPUT" else group.outputs
+    for s in coll:
+        if getattr(s, "name", None) == name:
+            ident = getattr(s, "identifier", None)
+            if ident:
+                return str(ident)
+    return None
+
+
+def ensure_road_terrain_blend_node_group() -> bpy.types.NodeTree:
+    existing = bpy.data.node_groups.get(_RWB_ROAD_TERRAIN_BLEND_GN)
+    if existing and isinstance(existing, bpy.types.NodeTree):
+        group = existing
+    else:
+        group = bpy.data.node_groups.new(_RWB_ROAD_TERRAIN_BLEND_GN, "GeometryNodeTree")
+
+    group["rwb_version"] = 1
+
+    nt = group
+    nt.nodes.clear()
+    nt.links.clear()
+
+    _clear_node_group_interface(group)
+
+    sock_geo_in = _new_iface_socket(group, name="Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+    sock_road = _new_iface_socket(group, name="Road", in_out="INPUT", socket_type="NodeSocketObject")
+    sock_blend_start = _new_iface_socket(group, name="Blend Start (m)", in_out="INPUT", socket_type="NodeSocketFloat")
+    sock_blend_end = _new_iface_socket(group, name="Blend End (m)", in_out="INPUT", socket_type="NodeSocketFloat")
+    sock_ray_h = _new_iface_socket(group, name="Ray Height (m)", in_out="INPUT", socket_type="NodeSocketFloat")
+    sock_geo_out = _new_iface_socket(group, name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+
+    if hasattr(sock_blend_start, "default_value"):
+        sock_blend_start.default_value = 0.0
+    if hasattr(sock_blend_end, "default_value"):
+        sock_blend_end.default_value = 10.0
+    if hasattr(sock_ray_h, "default_value"):
+        sock_ray_h.default_value = 2000.0
+
+    gi = nt.nodes.new("NodeGroupInput")
+    gi.location = (-1400.0, 0.0)
+    go = nt.nodes.new("NodeGroupOutput")
+    go.location = (860.0, 0.0)
+
+    obj_info = nt.nodes.new("GeometryNodeObjectInfo")
+    obj_info.location = (-1180.0, 240.0)
+    if hasattr(obj_info, "transform_space"):
+        obj_info.transform_space = "RELATIVE"
+    if "As Instance" in obj_info.inputs:
+        obj_info.inputs["As Instance"].default_value = False
+
+    prox = nt.nodes.new("GeometryNodeProximity")
+    prox.location = (-760.0, 220.0)
+    if hasattr(prox, "target_element"):
+        prox.target_element = "FACES"
+
+    pos = nt.nodes.new("GeometryNodeInputPosition")
+    pos.location = (-1180.0, -140.0)
+
+    sep_pos = nt.nodes.new("ShaderNodeSeparateXYZ")
+    sep_pos.location = (-980.0, -140.0)
+
+    sep_nearest = nt.nodes.new("ShaderNodeSeparateXYZ")
+    sep_nearest.location = (-540.0, 220.0)
+
+    diff = nt.nodes.new("ShaderNodeVectorMath")
+    diff.location = (-540.0, 0.0)
+    diff.operation = "SUBTRACT"
+
+    sep_diff = nt.nodes.new("ShaderNodeSeparateXYZ")
+    sep_diff.location = (-320.0, 0.0)
+
+    comb_diff = nt.nodes.new("ShaderNodeCombineXYZ")
+    comb_diff.location = (-120.0, 0.0)
+    comb_diff.inputs["Z"].default_value = 0.0
+
+    len_xy = nt.nodes.new("ShaderNodeVectorMath")
+    len_xy.location = (80.0, 0.0)
+    len_xy.operation = "LENGTH"
+
+    mapr = nt.nodes.new("ShaderNodeMapRange")
+    mapr.location = (300.0, 0.0)
+    mapr.inputs["To Min"].default_value = 0.0
+    mapr.inputs["To Max"].default_value = 1.0
+    mapr.clamp = True
+    if hasattr(mapr, "interpolation_type"):
+        mapr.interpolation_type = "SMOOTHERSTEP"
+
+    ray_dir = nt.nodes.new("ShaderNodeCombineXYZ")
+    ray_dir.location = (-320.0, 520.0)
+    ray_dir.inputs["X"].default_value = 0.0
+    ray_dir.inputs["Y"].default_value = 0.0
+    ray_dir.inputs["Z"].default_value = -1.0
+
+    ray_origin_nearest = nt.nodes.new("ShaderNodeCombineXYZ")
+    ray_origin_nearest.location = (-120.0, 520.0)
+
+    raycast_nearest = nt.nodes.new("GeometryNodeRaycast")
+    raycast_nearest.location = (80.0, 520.0)
+
+    sep_hit_pos = nt.nodes.new("ShaderNodeSeparateXYZ")
+    sep_hit_pos.location = (300.0, 520.0)
+
+    ray_origin_here = nt.nodes.new("ShaderNodeCombineXYZ")
+    ray_origin_here.location = (-120.0, 760.0)
+
+    raycast_here = nt.nodes.new("GeometryNodeRaycast")
+    raycast_here.location = (80.0, 760.0)
+
+    one = nt.nodes.new("ShaderNodeValue")
+    one.location = (300.0, 280.0)
+    one.outputs["Value"].default_value = 1.0
+
+    switch = nt.nodes.new("GeometryNodeSwitch")
+    switch.location = (520.0, 120.0)
+    if hasattr(switch, "input_type"):
+        switch.input_type = "FLOAT"
+
+    mix_z = nt.nodes.new("ShaderNodeMix")
+    mix_z.location = (520.0, -160.0)
+    if hasattr(mix_z, "data_type"):
+        mix_z.data_type = "FLOAT"
+
+    comb_new_pos = nt.nodes.new("ShaderNodeCombineXYZ")
+    comb_new_pos.location = (720.0, -160.0)
+
+    set_pos = nt.nodes.new("GeometryNodeSetPosition")
+    set_pos.location = (520.0, 0.0)
+
+    nt.links.new(gi.outputs[sock_road.name], obj_info.inputs["Object"])
+    nt.links.new(obj_info.outputs["Geometry"], prox.inputs["Target"])
+
+    nt.links.new(gi.outputs[sock_geo_in.name], set_pos.inputs["Geometry"])
+    nt.links.new(set_pos.outputs["Geometry"], go.inputs[sock_geo_out.name])
+
+    nt.links.new(pos.outputs["Position"], sep_pos.inputs["Vector"])
+    nt.links.new(pos.outputs["Position"], diff.inputs[0])
+    nt.links.new(prox.outputs["Position"], diff.inputs[1])
+    nt.links.new(prox.outputs["Position"], sep_nearest.inputs["Vector"])
+
+    nt.links.new(diff.outputs["Vector"], sep_diff.inputs["Vector"])
+    nt.links.new(sep_diff.outputs["X"], comb_diff.inputs["X"])
+    nt.links.new(sep_diff.outputs["Y"], comb_diff.inputs["Y"])
+    nt.links.new(comb_diff.outputs["Vector"], len_xy.inputs[0])
+
+    nt.links.new(len_xy.outputs["Value"], mapr.inputs["Value"])
+    nt.links.new(gi.outputs[sock_blend_start.name], mapr.inputs["From Min"])
+    nt.links.new(gi.outputs[sock_blend_end.name], mapr.inputs["From Max"])
+
+    nt.links.new(sep_nearest.outputs["X"], ray_origin_nearest.inputs["X"])
+    nt.links.new(sep_nearest.outputs["Y"], ray_origin_nearest.inputs["Y"])
+    nt.links.new(gi.outputs[sock_ray_h.name], ray_origin_nearest.inputs["Z"])
+
+    nt.links.new(sep_pos.outputs["X"], ray_origin_here.inputs["X"])
+    nt.links.new(sep_pos.outputs["Y"], ray_origin_here.inputs["Y"])
+    nt.links.new(gi.outputs[sock_ray_h.name], ray_origin_here.inputs["Z"])
+
+    nt.links.new(obj_info.outputs["Geometry"], raycast_nearest.inputs["Target Geometry"])
+    nt.links.new(ray_origin_nearest.outputs["Vector"], raycast_nearest.inputs["Ray Origin"])
+    nt.links.new(ray_dir.outputs["Vector"], raycast_nearest.inputs["Ray Direction"])
+
+    nt.links.new(obj_info.outputs["Geometry"], raycast_here.inputs["Target Geometry"])
+    nt.links.new(ray_origin_here.outputs["Vector"], raycast_here.inputs["Ray Origin"])
+    nt.links.new(ray_dir.outputs["Vector"], raycast_here.inputs["Ray Direction"])
+
+    nt.links.new(raycast_nearest.outputs["Hit Position"], sep_hit_pos.inputs["Vector"])
+
+    nt.links.new(raycast_here.outputs["Is Hit"], switch.inputs["Switch"])
+    nt.links.new(mapr.outputs["Result"], switch.inputs[1])
+    nt.links.new(one.outputs["Value"], switch.inputs[2])
+
+    nt.links.new(switch.outputs["Output"], mix_z.inputs["Factor"])
+    nt.links.new(sep_hit_pos.outputs["Z"], mix_z.inputs["A"])
+    nt.links.new(sep_pos.outputs["Z"], mix_z.inputs["B"])
+
+    nt.links.new(sep_pos.outputs["X"], comb_new_pos.inputs["X"])
+    nt.links.new(sep_pos.outputs["Y"], comb_new_pos.inputs["Y"])
+    nt.links.new(mix_z.outputs["Result"], comb_new_pos.inputs["Z"])
+    nt.links.new(comb_new_pos.outputs["Vector"], set_pos.inputs["Position"])
+
+    return group
+
+
+def _find_modifier(obj: bpy.types.Object, name: str) -> bpy.types.Modifier | None:
+    for m in obj.modifiers:
+        if m.name == name:
+            return m
+    return None
+
+
+def apply_road_terrain_blend(
+    terrain_obj: bpy.types.Object | None,
+    road_obj: bpy.types.Object | None,
+    *,
+    enabled: bool,
+    blend_start_m: float = 0.0,
+    blend_end_m: float = 10.0,
+    ray_height_m: float = 2000.0,
+) -> None:
+    if terrain_obj is None or terrain_obj.type != "MESH":
+        return
+
+    mod = _find_modifier(terrain_obj, _RWB_ROAD_TERRAIN_BLEND_MOD)
+
+    if not enabled or road_obj is None or road_obj.type != "MESH":
+        if mod is not None:
+            terrain_obj.modifiers.remove(mod)
+        return
+
+    group = ensure_road_terrain_blend_node_group()
+    if mod is None:
+        mod = terrain_obj.modifiers.new(name=_RWB_ROAD_TERRAIN_BLEND_MOD, type="NODES")
+    mod.node_group = group
+
+    road_ident = _iface_socket_identifier(group, name="Road", in_out="INPUT")
+    start_ident = _iface_socket_identifier(group, name="Blend Start (m)", in_out="INPUT")
+    end_ident = _iface_socket_identifier(group, name="Blend End (m)", in_out="INPUT")
+    ray_ident = _iface_socket_identifier(group, name="Ray Height (m)", in_out="INPUT")
+
+    if road_ident:
+        mod[road_ident] = road_obj
+    if start_ident:
+        mod[start_ident] = float(max(0.0, blend_start_m))
+    if end_ident:
+        end_v = float(max(0.0, blend_end_m))
+        start_v = float(max(0.0, blend_start_m))
+        if end_v < start_v:
+            end_v = start_v
+        mod[end_ident] = end_v
+    if ray_ident:
+        mod[ray_ident] = float(max(10.0, ray_height_m))

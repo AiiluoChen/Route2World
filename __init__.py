@@ -14,9 +14,48 @@ from .gui.main import ROUTE2WORLD_PT_Main, Route2WorldProperties
 from .app.ops import ROUTE2WORLD_OT_GenerateFromGpx, ROUTE2WORLD_OT_SetupPaintMask
 from .scatter.ops import ROUTE2WORLD_OT_ScatterRoadsideAssets
 from .gui.scatter import ROUTE2WORLD_PT_Procedural, Route2WorldScatterProperties
+from .gui.translations import t
+
+
+class Route2WorldPreferences(bpy.types.AddonPreferences):
+    bl_idname = __name__
+
+    mapbox_access_token: bpy.props.StringProperty(
+        name="Mapbox Access Token",
+        description="Enter your Mapbox Access Token",
+        subtype="PASSWORD",
+    )
+
+    default_process_mode: bpy.props.EnumProperty(
+        name="Default Processing Mode",
+        items=[
+            ("AUTO", "Auto Generate", "Automatically generate terrain based on GPX"),
+            ("MAPBOX", "Download Terrain", "Download terrain from Mapbox"),
+        ],
+        default="AUTO",
+    )
+
+    download_quality: bpy.props.EnumProperty(
+        name="Download Quality",
+        items=[
+            ("HIGH", "High", "High resolution"),
+            ("MEDIUM", "Medium", "Medium resolution"),
+            ("LOW", "Low", "Low resolution"),
+        ],
+        default="MEDIUM",
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        box = layout.box()
+        box.label(text=t("Mapbox Configuration"))
+        box.prop(self, "mapbox_access_token", text=t("Mapbox Access Token"))
+        box.prop(self, "default_process_mode", text=t("Default Processing Mode"))
+        box.prop(self, "download_quality", text=t("Download Quality"))
 
 
 _classes = (
+    Route2WorldPreferences,
     Route2WorldProperties,
     Route2WorldScatterProperties,
     ROUTE2WORLD_OT_GenerateFromGpx,

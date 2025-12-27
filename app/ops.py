@@ -4,6 +4,7 @@ import bpy
 
 from ..building.builder import (
     add_solidify,
+    apply_road_terrain_blend,
     compute_route_bounds,
     create_road_mesh,
     create_route_curve,
@@ -14,6 +15,7 @@ from ..building.builder import (
 )
 from ..parse.gpx import parse_gpx_track, project_to_local_meters, simplify_polyline_xy
 from ..material.manager import apply_textures_from_scene_settings
+from .mapbox import MapboxTerrainDownloader
 
 
 class ROUTE2WORLD_OT_GenerateFromGpx(bpy.types.Operator):
@@ -75,18 +77,31 @@ class ROUTE2WORLD_OT_GenerateFromGpx(bpy.types.Operator):
         terrain_obj = None
         road_obj = None
         if p.create_terrain:
-            bounds = compute_route_bounds(route_raw, p.terrain_margin_m)
-            terrain_obj = create_terrain(
-                name="RWB_Terrain",
-                bounds=bounds,
-                route=terrain_route,
-                road_width_m=p.road_width_m,
-                terrain_detail=p.terrain_detail,
-                terrain_style=p.terrain_style,
-                seed=p.seed,
-                road_embed_m=p.road_embed_m,
-            )
-            collection.objects.link(terrain_obj)
+            if p.process_mode == "MAPBOX":
+                try:
+                    downloader = MapboxTerrainDownloader(context)
+                    # Use preference quality
+                    pkg_name = __package__.split('.')[0]
+                    quality = context.preferences.addons[pkg_name].preferences.download_quality
+                    terrain_obj = downloader.download_and_create_terrain(geo_points, quality=quality)
+                    if terrain_obj:
+                        collection.objects.link(terrain_obj)
+                except Exception as e:
+                    self.report({"ERROR"}, f"Mapbox Error: {e}")
+                    return {"CANCELLED"}
+            else:
+                bounds = compute_route_bounds(route_raw, p.terrain_margin_m)
+                terrain_obj = create_terrain(
+                    name="RWB_Terrain",
+                    bounds=bounds,
+                    route=terrain_route,
+                    road_width_m=p.road_width_m,
+                    terrain_detail=p.terrain_detail,
+                    terrain_style=p.terrain_style,
+                    seed=p.seed,
+                    road_embed_m=p.road_embed_m,
+                )
+                collection.objects.link(terrain_obj)
 
         if p.create_route_curve:
             curve_obj = create_route_curve("RWB_Route", route_raw)
@@ -103,6 +118,13 @@ class ROUTE2WORLD_OT_GenerateFromGpx(bpy.types.Operator):
             road_for_terrain = road_obj or bpy.data.objects.get("RWB_Road")
             if road_for_terrain is not None:
                 lower_terrain_under_road(terrain_obj, road_for_terrain)
+                apply_road_terrain_blend(
+                    terrain_obj,
+                    road_for_terrain,
+                    enabled=bool(p.enable_road_terrain_blend),
+                    blend_start_m=float(p.road_terrain_blend_start_m),
+                    blend_end_m=float(p.road_terrain_blend_end_m),
+                )
 
         msgs = apply_textures_from_scene_settings(p, terrain_obj=terrain_obj, road_obj=road_obj)
         for m in msgs:

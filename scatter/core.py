@@ -254,8 +254,40 @@ def _build_terrain_bvh(obj: bpy.types.Object, depsgraph: bpy.types.Depsgraph) ->
     if obj is None or obj.type != "MESH":
         return None
     eval_obj = obj.evaluated_get(depsgraph)
-    bvh = BVHTree.FromObject(eval_obj, depsgraph)
-    return bvh, eval_obj.matrix_world, eval_obj.matrix_world.inverted()
+    mw = eval_obj.matrix_world
+    try:
+        bvh = BVHTree.FromObject(eval_obj, depsgraph)
+        return bvh, mw, mw.inverted()
+    except Exception:
+        pass
+
+    mesh = None
+    try:
+        mesh = eval_obj.to_mesh(preserve_all_data_layers=True, depsgraph=depsgraph)
+    except TypeError:
+        try:
+            mesh = eval_obj.to_mesh(preserve_all_data_layers=True)
+        except TypeError:
+            try:
+                mesh = eval_obj.to_mesh()
+            except Exception:
+                mesh = None
+    except Exception:
+        mesh = None
+
+    if mesh is None:
+        return None
+
+    try:
+        bvh = BVHTree.FromMesh(mesh)
+        return bvh, mw, mw.inverted()
+    except Exception:
+        return None
+    finally:
+        try:
+            eval_obj.to_mesh_clear()
+        except Exception:
+            pass
 
 
 def _terrain_bounds_xy_world(obj: bpy.types.Object, depsgraph: bpy.types.Depsgraph) -> tuple[float, float, float, float] | None:
@@ -478,6 +510,8 @@ def scatter_roadside_assets(context: bpy.types.Context, settings: ScatterRoadsid
 
     depsgraph = context.evaluated_depsgraph_get()
     bvh_pack = _build_terrain_bvh(terrain_obj, depsgraph)
+    if bvh_pack is None:
+        return 0, f"Terrain '{terrain_obj.name}' cannot be evaluated to a mesh (convert/apply modifiers)"
     terrain_bounds = _terrain_bounds_xy_world(terrain_obj, depsgraph)
 
     parent = _ensure_collection("Route2World")

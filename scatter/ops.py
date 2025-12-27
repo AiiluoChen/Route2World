@@ -59,7 +59,11 @@ class ROUTE2WORLD_OT_ScatterRoadsideAssets(bpy.types.Operator):
             ),
         )
 
-        created, message = scatter_roadside_assets(context, settings)
+        try:
+            created, message = scatter_roadside_assets(context, settings)
+        except Exception as e:
+            self.report({"ERROR"}, str(e))
+            return {"CANCELLED"}
         if created <= 0:
             self.report({"WARNING"}, message or "No instances created")
         else:

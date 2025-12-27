@@ -1,5 +1,5 @@
 import bpy
-from .texturing import apply_textures_from_scene_settings
+from ..material.manager import apply_textures_from_scene_settings
 
 
 def update_textures(self, context):
@@ -26,7 +26,7 @@ class Route2WorldProperties(bpy.types.PropertyGroup):
 
     texture_root_dir: bpy.props.StringProperty(
         name="Texture Root",
-        description="Optional override. If empty, uses the add-on Texture folder",
+        description="Optional override. If empty, uses the add-on assets/textures folder",
         subtype="DIR_PATH",
         default="",
         update=update_textures,

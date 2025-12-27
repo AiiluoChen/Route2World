@@ -15,7 +15,7 @@ def _addon_dir() -> str:
 
 
 def default_texture_root() -> str:
-    return os.path.join(_addon_dir(), "Texture")
+    return os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "textures")
 
 
 @dataclass(frozen=True)

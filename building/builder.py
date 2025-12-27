@@ -5,8 +5,9 @@ import math
 import bpy
 import bmesh
 from mathutils import Vector, noise
+from mathutils.bvhtree import BVHTree
 
-from .geom import Bounds2D, bounds_from_points_xy, lerp, smoothstep01
+from ..util.geom import Bounds2D, bounds_from_points_xy, lerp, smoothstep01
 
 
 ROAD_UV_TILE_M = 6.0
@@ -37,6 +38,100 @@ def add_solidify(obj: bpy.types.Object, thickness: float) -> None:
     mod.thickness = t
     mod.offset = 1.0
     mod.use_even_offset = True
+
+
+def lower_terrain_under_road(
+    terrain_obj: bpy.types.Object,
+    road_obj: bpy.types.Object,
+    clearance_m: float = 0.02,
+    xy_margin_m: float = 2.0,
+) -> int:
+    if terrain_obj is None or road_obj is None:
+        return 0
+    if terrain_obj.type != "MESH" or road_obj.type != "MESH":
+        return 0
+    terrain_mesh = terrain_obj.data
+    if not isinstance(terrain_mesh, bpy.types.Mesh):
+        return 0
+
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    eval_road = road_obj.evaluated_get(depsgraph)
+    if eval_road is None or eval_road.type != "MESH":
+        return 0
+
+    bvh = BVHTree.FromObject(eval_road, depsgraph)
+    mw_road = eval_road.matrix_world
+    mwi_road = mw_road.inverted()
+    mw_terrain = terrain_obj.matrix_world
+    mwi_terrain = mw_terrain.inverted()
+
+    min_x = min_y = min_z = float("inf")
+    max_x = max_y = max_z = float("-inf")
+    for corner in eval_road.bound_box:
+        co = mw_road @ Vector(corner)
+        min_x = min(min_x, co.x)
+        min_y = min(min_y, co.y)
+        min_z = min(min_z, co.z)
+        max_x = max(max_x, co.x)
+        max_y = max(max_y, co.y)
+        max_z = max(max_z, co.z)
+    if not (math.isfinite(min_x) and math.isfinite(min_y) and math.isfinite(min_z) and math.isfinite(max_x) and math.isfinite(max_y) and math.isfinite(max_z)):
+        return 0
+
+    margin = max(0.0, float(xy_margin_m))
+    min_x -= margin
+    min_y -= margin
+    max_x += margin
+    max_y += margin
+
+    clearance = max(0.0, float(clearance_m))
+    ray_pad = 10.0 + clearance
+    origin_above_z = max_z + ray_pad
+    origin_below_z = min_z - ray_pad
+    ray_len = (max_z - min_z) + 2.0 * ray_pad + 10.0
+    if ray_len < 1.0:
+        ray_len = 1.0
+
+    dir_down_w = Vector((0.0, 0.0, -1.0))
+    dir_up_w = Vector((0.0, 0.0, 1.0))
+    dir_down_l = (mwi_road.to_3x3() @ dir_down_w).normalized()
+    dir_up_l = (mwi_road.to_3x3() @ dir_up_w).normalized()
+
+    moved = 0
+    for v in terrain_mesh.vertices:
+        co_w = mw_terrain @ v.co
+        x = float(co_w.x)
+        y = float(co_w.y)
+        if x < min_x or x > max_x or y < min_y or y > max_y:
+            continue
+
+        origin_above_w = Vector((x, y, origin_above_z))
+        origin_below_w = Vector((x, y, origin_below_z))
+        origin_above_l = mwi_road @ origin_above_w
+        origin_below_l = mwi_road @ origin_below_w
+
+        hit_top = bvh.ray_cast(origin_above_l, dir_down_l, ray_len)
+        if hit_top is None or hit_top[0] is None:
+            continue
+        loc_top_w = mw_road @ hit_top[0]
+
+        hit_bot = bvh.ray_cast(origin_below_l, dir_up_l, ray_len)
+        loc_bot_w = None
+        if hit_bot is not None and hit_bot[0] is not None:
+            loc_bot_w = mw_road @ hit_bot[0]
+
+        ref_z = float(loc_top_w.z)
+        if loc_bot_w is not None:
+            ref_z = min(ref_z, float(loc_bot_w.z))
+
+        target_w = Vector((x, y, ref_z - clearance))
+        target_l = mwi_terrain @ target_w
+        if float(v.co.z) > float(target_l.z):
+            v.co.z = float(target_l.z)
+            moved += 1
+
+    terrain_mesh.update()
+    return moved
 
 
 def create_route_curve(name: str, points: list[Vector]) -> bpy.types.Object:

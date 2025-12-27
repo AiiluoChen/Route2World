@@ -2,7 +2,7 @@ import os
 
 import bpy
 
-from .build import (
+from ..building.builder import (
     add_solidify,
     compute_route_bounds,
     create_road_mesh,
@@ -10,9 +10,10 @@ from .build import (
     create_terrain,
     ensure_collection,
     level_road_crossfall,
+    lower_terrain_under_road,
 )
-from .gpx import parse_gpx_track, project_to_local_meters, simplify_polyline_xy
-from .texturing import apply_textures_from_scene_settings
+from ..parse.gpx import parse_gpx_track, project_to_local_meters, simplify_polyline_xy
+from ..material.manager import apply_textures_from_scene_settings
 
 
 class ROUTE2WORLD_OT_GenerateFromGpx(bpy.types.Operator):
@@ -98,6 +99,11 @@ class ROUTE2WORLD_OT_GenerateFromGpx(bpy.types.Operator):
             level_road_crossfall(road_obj, route_raw, p.road_width_m)
             add_solidify(road_obj, p.road_thickness_m)
 
+        if terrain_obj is not None:
+            road_for_terrain = road_obj or bpy.data.objects.get("RWB_Road")
+            if road_for_terrain is not None:
+                lower_terrain_under_road(terrain_obj, road_for_terrain)
+
         msgs = apply_textures_from_scene_settings(p, terrain_obj=terrain_obj, road_obj=road_obj)
         for m in msgs:
             self.report({"WARNING"}, str(m))
@@ -121,6 +127,64 @@ class ROUTE2WORLD_OT_SetupPaintMask(bpy.types.Operator):
             self.report({"ERROR"}, "RWB_Terrain is not a mesh")
             return {"CANCELLED"}
             
+        def _collection_is_in_tree(root: bpy.types.Collection, target: bpy.types.Collection) -> bool:
+            if root == target:
+                return True
+            for c in root.children:
+                if _collection_is_in_tree(c, target):
+                    return True
+            return False
+
+        def _layer_collection_path(
+            root: bpy.types.LayerCollection,
+            target: bpy.types.Collection,
+            acc: list[bpy.types.LayerCollection],
+        ) -> list[bpy.types.LayerCollection] | None:
+            if root.collection == target:
+                return acc + [root]
+            for lc in root.children:
+                found = _layer_collection_path(lc, target, acc + [root])
+                if found:
+                    return found
+            return None
+
+        if not obj.users_collection:
+            c = ensure_collection("Route2World")
+            if obj.name not in c.objects:
+                c.objects.link(obj)
+
+        scene_root = context.scene.collection
+        for c in list(obj.users_collection):
+            if not _collection_is_in_tree(scene_root, c):
+                try:
+                    scene_root.children.link(c)
+                except RuntimeError:
+                    pass
+
+        for c in list(obj.users_collection):
+            path = _layer_collection_path(context.view_layer.layer_collection, c, [])
+            if not path:
+                continue
+            for lc in path:
+                lc.exclude = False
+                lc.hide_viewport = False
+
+        try:
+            obj.hide_set(False)
+        except Exception:
+            obj.hide_viewport = False
+        obj.hide_select = False
+
+        if context.view_layer.objects.get(obj.name) is None:
+            try:
+                context.scene.collection.objects.link(obj)
+            except RuntimeError:
+                pass
+
+        if context.view_layer.objects.get(obj.name) is None:
+            self.report({"ERROR"}, "RWB_Terrain is not available in the active ViewLayer")
+            return {"CANCELLED"}
+
         context.view_layer.objects.active = obj
         obj.select_set(True)
         

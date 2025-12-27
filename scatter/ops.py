@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import bpy
 
-from .scatter_core import ScatterCategorySettings, ScatterRoadsideSettings, scatter_roadside_assets
+from .core import ScatterCategorySettings, ScatterRoadsideSettings, scatter_roadside_assets
 
 
 class ROUTE2WORLD_OT_ScatterRoadsideAssets(bpy.types.Operator):

@@ -12,7 +12,7 @@ from mathutils.bvhtree import BVHTree
 
 
 def _addon_source_dir() -> str:
-    return os.path.join(os.path.dirname(__file__), "Source")
+    return os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "models")
 
 
 def _ensure_collection(name: str, parent: bpy.types.Collection | None = None) -> bpy.types.Collection:

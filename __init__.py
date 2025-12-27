@@ -10,10 +10,10 @@ bl_info = {
 
 import bpy
 
-from .ui import ROUTE2WORLD_PT_Main, Route2WorldProperties
-from .ops import ROUTE2WORLD_OT_GenerateFromGpx, ROUTE2WORLD_OT_SetupPaintMask
-from .scatter_ops import ROUTE2WORLD_OT_ScatterRoadsideAssets
-from .scatter_ui import ROUTE2WORLD_PT_Procedural, Route2WorldScatterProperties
+from .gui.main import ROUTE2WORLD_PT_Main, Route2WorldProperties
+from .app.ops import ROUTE2WORLD_OT_GenerateFromGpx, ROUTE2WORLD_OT_SetupPaintMask
+from .scatter.ops import ROUTE2WORLD_OT_ScatterRoadsideAssets
+from .gui.scatter import ROUTE2WORLD_PT_Procedural, Route2WorldScatterProperties
 
 
 _classes = (

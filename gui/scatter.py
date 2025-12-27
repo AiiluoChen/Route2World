@@ -6,7 +6,7 @@ import bpy
 class Route2WorldScatterProperties(bpy.types.PropertyGroup):
     assets_root_dir: bpy.props.StringProperty(
         name="Assets Root",
-        description="Optional override. If empty, uses the add-on Source folder",
+        description="Optional override. If empty, uses the add-on assets/models folder",
         subtype="DIR_PATH",
         default="",
     )
